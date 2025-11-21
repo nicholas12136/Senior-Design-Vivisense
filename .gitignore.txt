@@ -1,0 +1,18 @@
+# --- VS Code & ESP32 (PlatformIO) ---
+.vscode/
+.pio/
+*.elf
+*.bin
+build/
+output/
+
+# --- MATLAB ---
+*.asv
+*.autosave
+slprj/
+sfprj/
+*.mex*
+
+# --- OS Junk ---
+.DS_Store
+Thumbs.db
