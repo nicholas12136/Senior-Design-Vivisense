@@ -5,7 +5,7 @@ Welcome to the central hub for our Senior Design project.
 ## 🔗 Access Points (Quick Links)
 | Tool | Usage | Link |
 | :--- | :--- | :--- |
-| **📂 OneDrive** | Documentation, BOMs, & Heavy Data | [**Click to Open Shared Drive**]|https://siuecougars-my.sharepoint.com/:f:/r/personal/dafowle_siue_edu/Documents/School/Fall%202025/Senior%20Design?csf=1&web=1&e=I8oYF6|
+| **📂 OneDrive** | Documentation, BOMs, & Heavy Data | [**Click to Open Shared Drive**](https://siuecougars-my.sharepoint.com/:f:/r/personal/dafowle_siue_edu/Documents/School/Fall%202025/Senior%20Design?csf=1&web=1&e=I8oYF6) |
 
 | **⚙️ Fusion 360** | CAD Models & Mechanical Design | [**View Team Hub on Web**](PASTE_FUSION_LINK_HERE) |
 
