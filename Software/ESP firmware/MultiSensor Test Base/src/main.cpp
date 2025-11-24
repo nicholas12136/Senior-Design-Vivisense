@@ -8,7 +8,10 @@
 uint16_t cmdSeq = 0;
 bool s1DataReady = false;
 bool s2DataReady = false;
-
+bool s3DataReady = false;
+bool s4DataReady = false;
+bool s5DataReady = false;
+bool s6DataReady = false;
 
 const uint8_t podMac[6] = {0x88, 0x88, 0x88, 0x88, 0x88}; //Just a placeholder need to replace
 
@@ -43,6 +46,10 @@ struct CommandPacket
 SensorPacket recvData;
 SensorPacket Sensor1Data;
 SensorPacket Sensor2Data;
+SensorPacket Sensor3Data;
+SensorPacket Sensor4Data;
+SensorPacket Sensor5Data;
+SensorPacket Sensor6Data;
 
 bool addEspNowPeer(const uint8_t *mac)
 {
@@ -69,8 +76,10 @@ void printSensorData(SensorPacket data){
 // Call once in setup()
 void printCsvHeader() {
   Serial.print("time_ms");
-  for (int i = 0; i < 16; ++i) Serial.printf(",sensor1_zone%d_distance", i);
-  for (int i = 0; i < 16; ++i) Serial.printf(",sensor2_zone%d_distance", i);
+  for (int i = 0; i < 16; i++) Serial.printf(",sensor1_zone%d_distance", i);
+  for (int i = 0; i < 16; i++) Serial.printf(",sensor2_zone%d_distance", i);
+  for (int i = 0; i < 16; i++) Serial.printf(",sensor1_zone%d_status", i);
+  for (int i = 0; i < 16; i++) Serial.printf(",sensor2_zone%d_status", i);
   Serial.println();
 }
 
@@ -79,6 +88,8 @@ void printCsvRow(const SensorPacket &s1, const SensorPacket &s2) {
   Serial.printf("%u", s1.timestamp_ms);
   for (int i = 0; i < 16; ++i) Serial.printf(",%u", (unsigned)s1.distance_mm[i]);
   for (int i = 0; i < 16; ++i) Serial.printf(",%u", (unsigned)s2.distance_mm[i]);
+  for (int i = 0; i < 16; ++i) Serial.printf(",%u", (unsigned)s1.target_status[i]);
+  for (int i = 0; i < 16; ++i) Serial.printf(",%u", (unsigned)s2.target_status[i]);
   Serial.println();
 }
 
@@ -117,34 +128,46 @@ void sendStopPolling(){
 void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len){
 
   if(len != sizeof(SensorPacket)) return;
-  // --- Step 1: Temporarily cast the incoming data pointer for immediate inspection ---
-  // We use this pointer *only* to read the ID quickly before copying.
-  SensorPacket *tempPtr = (SensorPacket *)incomingData;
-  uint8_t senderId = tempPtr->sensor_id;
+
+  SensorPacket recPkt;
+  memcpy(&recPkt, incomingData, sizeof(CommandPacket));
+  uint8_t senderId = recPkt.sensor_id;
 
   // --- Step 2: Decide where to save the data based on the ID ---
   switch (senderId)
   {
   case 1:
     // If the ID is 1, copy the data into the Sensor1Data structure
-    { // Optional: Safety check the length
-      memcpy(&Sensor1Data, incomingData, sizeof(SensorPacket));
+      Sensor1Data = recPkt;
       s1DataReady = true;
-    }
-    break;
+      break;
   case 2:
-    // If the ID is 2, copy the data into the Sensor2Data structure
-    {
-      memcpy(&Sensor2Data, incomingData, sizeof(SensorPacket));
+      Sensor2Data = recPkt;
       s2DataReady = true;
-    }
+      break;
+  case 3:
+       Sensor3Data = recPkt;
+    s3DataReady = true;
     break;
-  default:
-    // Handle unknown IDs if necessary
-    Serial.println("Received data from unknown sensor ID");
+  case 4:
+    Sensor4Data = recPkt;
+    s4DataReady = true;
     break;
+  case 5:
+    Sensor5Data = recPkt;
+    s5DataReady = true;
+    break;
+  case 6:
+    Sensor6Data = recPkt;
+    s6DataReady = true;
+    break;
+    default:
+      // Handle unknown IDs if necessary
+      Serial.println("Received data from unknown sensor ID");
+      break;
   }
 }
+
 
 // Call from loop()
 void handleSerialCommands()
