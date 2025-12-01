@@ -19,12 +19,12 @@ function mainPlot
     % 1) Define sensors (position in mm, angles in degrees)
     % ---------------------------------------------------------------------
     % Adjust these for your real sensor layout.
-    sensors(1) = Sensor(-500, 500, 250, 0, 0, 0); 
-    sensors(2) = Sensor(-500, 500, 250, 0, 0, 60); 
-    sensors(3) = Sensor(500, 500, 250, 0, 0,  0);  
-    sensors(4) = Sensor(500, 500, 250, 0, 0, -60); 
-    sensors(5) = Sensor(0, -500, 500, 0, 0, 150); 
-    sensors(6) = Sensor(0, -500, 500, 0, 0, -150); 
+    sensors(1) = Sensor(0, 0, 538, 0, 0, 0); 
+    % sensors(2) = Sensor(-500, 500, 250, 0, 0, 60); 
+    % sensors(3) = Sensor(500, 500, 250, 0, 0,  0);  
+    % sensors(4) = Sensor(500, 500, 250, 0, 0, -60); 
+    % sensors(5) = Sensor(0, -500, 500, 0, 0, 150); 
+    % sensors(6) = Sensor(0, -500, 500, 0, 0, -150); 
 
     numSensors = numel(sensors);
 
