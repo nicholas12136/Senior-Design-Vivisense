@@ -87,7 +87,7 @@ function mainPlot
 
     % --- NEW: distance / floor display settings ---
     distThresh           = 2500;   % mm, points farther than this can be hidden
-    showOnlyBelowThresh  = true;   % set false to show all distances
+    showOnlyBelowThresh  = false;   % set false to show all distances
     floorTol             = 100;     % mm, |z| <= floorTol is treated as floor
 
 
