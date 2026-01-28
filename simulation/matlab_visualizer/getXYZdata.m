@@ -86,7 +86,7 @@ function [x,y,z] = getXYZdata(M, sensors, res)
                     % Local sensor-frame coordinates
                     % +Y forward, +Z up
                     % -----------------------------------------
-                    x_loc = -d * sind(p) * cosd(t);   % sideways May need to remove negative sign
+                    x_loc = d * sind(p) * cosd(t);   % sideways May need to remove negative sign
                     y_loc = d * cosd(p) * cosd(t);   % forward
                     z_loc = d * sind(t);             % up
 
