@@ -19,12 +19,14 @@ function mainPlot
     % 1) Define sensors (position in mm, angles in degrees)
     % ---------------------------------------------------------------------
     % Adjust these for your real sensor layout.
-    sensors(1) = Sensor(0, 0, 538, 0, 0, 0); 
-    % sensors(2) = Sensor(-500, 500, 250, 0, 0, 60); 
-    % sensors(3) = Sensor(500, 500, 250, 0, 0,  0);  
-    % sensors(4) = Sensor(500, 500, 250, 0, 0, -60); 
-    % sensors(5) = Sensor(0, -500, 500, 0, 0, 150); 
-    % sensors(6) = Sensor(0, -500, 500, 0, 0, -150); 
+    sensors(1) = Sensor(-300, 400, 250, 0, 0, 0); 
+    sensors(2) = Sensor(-300, 400, 250, 0, 0, 60); 
+    sensors(3) = Sensor(300, 400, 250, 0, 0,  0);  
+    sensors(4) = Sensor(300, 400, 250, 0, 0, -60); 
+    sensors(5) = Sensor(0, -400, 750, -10, 0, 150); 
+    sensors(6) = Sensor(0, -400, 750, -10, 0, -150); 
+    sensors(7) = Sensor(0, -400, 750, -10, 0, 90);
+    sensors(8) = Sensor(0, -400, 750, -10, 0, -90);
 
     numSensors = numel(sensors);
 
@@ -86,7 +88,7 @@ function mainPlot
     isPlaying    = false;
 
     % --- NEW: distance / floor display settings ---
-    distThresh           = 2500;   % mm, points farther than this can be hidden
+    distThresh           = 3000;   % mm, points farther than this can be hidden
     showOnlyBelowThresh  = false;   % set false to show all distances
     floorTol             = 100;     % mm, |z| <= floorTol is treated as floor
 
@@ -118,9 +120,9 @@ function mainPlot
     % quiver3(ax3, 0,0,0, 0,0,axisLength, ...
     %     'Color',[0 0 1], 'LineWidth',2, 'MaxHeadSize',0.5);  % Z (blue)
 
-    text(axisLength, 0, 0, 'X', 'FontSize',12, 'Color',[1 0 0]);
-    text(0, axisLength, 0, 'Y', 'FontSize',12, 'Color',[0 1 0]);
-    text(0, 0, axisLength, 'Z', 'FontSize',12, 'Color',[0 0 1]);
+    % text(axisLength, 0, 0, 'X', 'FontSize',12, 'Color',[1 0 0]);
+    % text(0, axisLength, 0, 'Y', 'FontSize',12, 'Color',[0 1 0]);
+    % text(0, 0, axisLength, 'Z', 'FontSize',12, 'Color',[0 0 1]);
 
     % Forward reference line in +Y
     plot3(ax3, zeros(10), linspace(0,3000,10), zeros(10), ...
@@ -138,7 +140,7 @@ function mainPlot
     scatter3(ax3, 0, 0, 0, 50, 'c', 'filled', 'MarkerFaceColor', 'magenta', 'MarkerEdgeColor', 'magenta');
 
 
-        colormap(ax3, myMap);
+    colormap(ax3, myMap);
     clim(ax3, [0 3500]);
     colorbar(ax3);
 
@@ -164,15 +166,15 @@ function mainPlot
     h3 = scatter3(ax3, ...
         x(1,maskNF1), y(1,maskNF1), z(1,maskNF1), ...
         25, dFrame1(maskNF1), 'filled');
-
+    
     % Floor points: fixed blue color
     h3Floor = scatter3(ax3, ...
         x(1,maskFloor1), y(1,maskFloor1), z(1,maskFloor1), ...
         30, 'b', 'filled');
 
 
-    xlim(ax3, [-4000 4000]);
-    ylim(ax3, [-4000 4000]);
+    xlim(ax3, [-5000 5000]);
+    ylim(ax3, [-5000 5000]);
     zlim(ax3, [0 4000]);
     view(ax3, 3);
     grid(ax3, "on");
@@ -200,13 +202,13 @@ function mainPlot
 
 
     colormap(ax2, myMap);
-    clim(ax2, [0 2000]);
+    clim(ax2, [0 3500]);
     colorbar(ax2);
 
     axis(ax2, 'equal');
     grid(ax2, 'on');
-    xlim(ax2, [-3000 3000]);
-    ylim(ax2, [-3000 3000]);
+    xlim(ax2, [-4500 4500]);
+    ylim(ax2, [-4500 4500]);
     xlabel(ax2, "X (mm)");
     ylabel(ax2, "Y (mm)");
     title(ax2, "Top-Down View (X-Y)");

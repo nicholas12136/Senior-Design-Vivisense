@@ -76,7 +76,7 @@ classdef Sensor
                       -sind(b) 0 cosd(b)];
             
             % Complete rotation
-            R = Rx(obj.alpha) * Rz(obj.gamma) * Ry(obj.beta);
+            R =  Rz(obj.gamma)* Rx(obj.alpha) * Ry(obj.beta);
 
             % Position vector
             d = [obj.x; obj.y; obj.z];
