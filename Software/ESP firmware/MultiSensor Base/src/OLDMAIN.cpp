@@ -84,15 +84,15 @@ void printCsvHeader() {
 }
 
 // Print a row once you have current data for both sensors
-void printCsvRow(const SensorPacket &s1, const SensorPacket &s2) {
-  Serial.printf("%u", s1.timestamp_ms);
-  for (int i = 0; i < 16; ++i) Serial.printf(",%u", (unsigned)s1.distance_mm[i]);
-  for (int i = 0; i < 16; ++i) Serial.printf(",%u", (unsigned)s2.distance_mm[i]);
-  for (int i = 0; i < 16; ++i) Serial.printf(",%u", (unsigned)s1.target_status[i]);
-  for (int i = 0; i < 16; ++i) Serial.printf(",%u", (unsigned)s2.target_status[i]);
+void printCsvRow(const SensorPacket &s1, const SensorPacket &s2, const SensorPacket &s3, const SensorPacket &s4, const SensorPacket &s5, const SensorPacket &s6)
+{
+  Serial.printf("%u,", s1.timestamp_ms);
+  for (int i = 0; i < 16; ++i) Serial.printf("%u,", (unsigned)s1.distance_mm[i]);
+  for (int i = 0; i < 16; ++i) Serial.printf("%u,", (unsigned)s2.distance_mm[i]);
+  for (int i = 0; i < 16; ++i) Serial.printf("%u,", (unsigned)s1.target_status[i]);
+  for (int i = 0; i < 16; ++i) Serial.printf("%u,", (unsigned)s2.target_status[i]);
   Serial.println();
 }
-
 
 void sendPollForMS(uint32_t durationMs) {
   CommandPacket pkt{};

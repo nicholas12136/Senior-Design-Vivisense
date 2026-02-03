@@ -9,7 +9,7 @@ constexpr uint8_t XSHUT_B = 18; // TODO: set your pin
 constexpr uint8_t I2C_SDA = 21; // TODO: set your pin (ESP32 default is often 21)
 constexpr uint8_t I2C_SCL = 22; // TODO: set your pin (ESP32 default is often 22)
 
-constexpr uint8_t SENSOR_A_ID = 1;
+constexpr uint8_t SENSOR_A_ID = 1; //Change for Right Pod
 constexpr uint8_t SENSOR_B_ID = 2;
 
 // Use different 7-bit I2C addresses to avoid conflicts. First sensor is moved off 0x29 (default).
@@ -90,7 +90,6 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
       break;
   }
 }
-
 
 
 bool addEspNowPeer(const uint8_t *mac)
