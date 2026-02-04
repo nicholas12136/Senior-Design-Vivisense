@@ -5,16 +5,16 @@
 #include <SparkFun_VL53L5CX_Library.h>
 
 // --- Pin & device configuration ------------------------------------------------
-constexpr uint8_t XSHUT_A = 19;
-constexpr uint8_t XSHUT_B = 18;
-constexpr uint8_t I2C_SDA = 21;
-constexpr uint8_t I2C_SCL = 22;
+constexpr uint8_t XSHUT_A = 1;
+constexpr uint8_t XSHUT_B = 0;
+constexpr uint8_t I2C_SDA = 8;
+constexpr uint8_t I2C_SCL = 9;
 
-constexpr uint8_t SENSOR_A_ID = 1; // Change for Right Pod
-constexpr uint8_t SENSOR_B_ID = 2;
+constexpr uint8_t SENSOR_A_ID = 5; // Change for Right Pod
+constexpr uint8_t SENSOR_B_ID = 6;
 
-constexpr uint8_t ADDR_A = 0x2A; // Moved off default 0x29
-constexpr uint8_t ADDR_B = 0x29;
+constexpr uint8_t ADDR_A = 0x29;
+constexpr uint8_t ADDR_B = 0x2A; // Moved off default 0x29
 
 const uint8_t baseMac[6] = {0x5C, 0x01, 0x3B, 0x88, 0x04, 0x58};
 
