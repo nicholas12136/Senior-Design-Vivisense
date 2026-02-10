@@ -16,7 +16,7 @@ constexpr uint8_t SENSOR_B_ID = 6;
 constexpr uint8_t ADDR_A = 0x23;
 constexpr uint8_t ADDR_B = 0x44;
 
-const uint8_t baseMac[6] = {0x88, 0x56, 0xA6, 0x70, 0x09, 0xDC};
+const uint8_t baseMac[6] = {0x5C, 0x01, 0x3B, 0x88, 0x04, 0x58};
 uint32_t startTime;
 
 // --- Types ---------------------------------------------------------------------
