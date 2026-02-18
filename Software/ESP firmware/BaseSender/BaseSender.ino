@@ -5,16 +5,23 @@
 #include <SparkFun_VL53L5CX_Library.h>
 
 // --- Pin & device configuration ------------------------------------------------
-constexpr uint8_t XSHUT_A = 18;
+constexpr uint8_t XSHUT_A = 16; //Sensor 5
 constexpr uint8_t XSHUT_B = 19;
+constexpr uint8_t XSHUT_C = 18;
+constexpr uint8_t XSHUT_D = 23;
+
 constexpr uint8_t I2C_SDA = 21;
 constexpr uint8_t I2C_SCL = 22;
 
-constexpr uint8_t SENSOR_A_ID = 5; // Change for Right Pod
+constexpr uint8_t SENSOR_A_ID = 5; 
 constexpr uint8_t SENSOR_B_ID = 6;
+constexpr uint8_t SENSOR_C_ID = 7;
+constexpr uint8_t SENSOR_D_ID = 8;
 
 constexpr uint8_t ADDR_A = 0x23;
-constexpr uint8_t ADDR_B = 0x44;
+constexpr uint8_t ADDR_B = 0x27;
+constexpr uint8_t ADDR_C = 0x30;
+constexpr uint8_t ADDR_D = 0x34;
 
 const uint8_t baseMac[6] = {0x5C, 0x01, 0x3B, 0x88, 0x04, 0x58};
 uint32_t startTime;
@@ -32,8 +39,13 @@ struct SensorPacket
 // --- State ---------------------------------------------------------------------
 SparkFun_VL53L5CX sensorA;
 SparkFun_VL53L5CX sensorB;
+SparkFun_VL53L5CX sensorC;
+SparkFun_VL53L5CX sensorD;
 VL53L5CX_ResultsData resultsA;
 VL53L5CX_ResultsData resultsB;
+VL53L5CX_ResultsData resultsC;
+VL53L5CX_ResultsData resultsD;
+
 
 // --- ESP-NOW helpers -----------------------------------------------------------
 void onEspNowSent(const uint8_t *mac, esp_now_send_status_t status)
@@ -81,7 +93,7 @@ bool setupSensor(SparkFun_VL53L5CX &sensor, uint8_t xshutPin, uint8_t newAddr, c
         return false;
     }
 
-    sensor.setRangingFrequency(1);
+    sensor.setRangingFrequency(10);
     sensor.setResolution(16);
 
     if (!sensor.startRanging())
@@ -100,8 +112,8 @@ bool setupSensor(SparkFun_VL53L5CX &sensor, uint8_t xshutPin, uint8_t newAddr, c
 // --- Data path -----------------------------------------------------------------
 void sendSynchronizedIfReady(uint32_t startTime)
 {
-    // Only send when both sensors have a fresh frame so timestamps align
-    if (!sensorA.isDataReady() || !sensorB.isDataReady())
+    // Only send when all sensors have a fresh frame so timestamps align
+    if (!sensorA.isDataReady() || !sensorB.isDataReady() || !sensorC.isDataReady() || !sensorD.isDataReady())
         return;
 
     const uint32_t timeSinceStart = millis() - startTime;
@@ -117,7 +129,6 @@ void sendSynchronizedIfReady(uint32_t startTime)
             pkt.distance_mm[i] = resultsA.distance_mm[i];
             pkt.target_status[i] = resultsA.target_status[i];
             pkt.nb_targets[i] = resultsA.nb_target_detected[i];
-            Serial.println(pkt.distance_mm[i]);
         }
         
         esp_err_t res = esp_now_send(baseMac, (uint8_t *)&pkt, sizeof(pkt));
@@ -155,6 +166,54 @@ void sendSynchronizedIfReady(uint32_t startTime)
     {
         Serial.println("getRangingData() failed for sensor B");
     }
+
+    // Send Sensor 2 Data
+    if (sensorC.getRangingData(&resultsC))
+    {
+        SensorPacket pkt{};
+        pkt.sensor_id = SENSOR_C_ID;
+        pkt.timestamp_ms = timeSinceStart;
+        for (uint8_t i = 0; i < 16; ++i)
+        {
+            pkt.distance_mm[i] = resultsC.distance_mm[i];
+            pkt.target_status[i] = resultsC.target_status[i];
+            pkt.nb_targets[i] = resultsC.nb_target_detected[i];
+        }
+        esp_err_t res = esp_now_send(baseMac, (uint8_t *)&pkt, sizeof(pkt));
+        if (res != ESP_OK)
+        {
+            Serial.print("esp_now_send error (C): ");
+            Serial.println(res);
+        }
+    }
+    else
+    {
+        Serial.println("getRangingData() failed for sensor C");
+    }
+
+    // Send Sensor 2 Data
+    if (sensorD.getRangingData(&resultsD))
+    {
+        SensorPacket pkt{};
+        pkt.sensor_id = SENSOR_D_ID;
+        pkt.timestamp_ms = timeSinceStart;
+        for (uint8_t i = 0; i < 16; ++i)
+        {
+            pkt.distance_mm[i] = resultsD.distance_mm[i];
+            pkt.target_status[i] = resultsD.target_status[i];
+            pkt.nb_targets[i] = resultsD.nb_target_detected[i];
+        }
+        esp_err_t res = esp_now_send(baseMac, (uint8_t *)&pkt, sizeof(pkt));
+        if (res != ESP_OK)
+        {
+            Serial.print("esp_now_send error (D): ");
+            Serial.println(res);
+        }
+    }
+    else
+    {
+        Serial.println("getRangingData() failed for sensor D");
+    }
 }
 
 // --- Arduino lifecycle ---------------------------------------------------------
@@ -165,8 +224,12 @@ void setup()
 
     pinMode(XSHUT_A, OUTPUT);
     pinMode(XSHUT_B, OUTPUT);
+    pinMode(XSHUT_C, OUTPUT);
+    pinMode(XSHUT_D, OUTPUT);
     digitalWrite(XSHUT_A, LOW);
     digitalWrite(XSHUT_B, LOW);
+    digitalWrite(XSHUT_C, LOW);
+    digitalWrite(XSHUT_D, LOW);
     delay(100);
 
     while (!Wire.begin(I2C_SDA, I2C_SCL))
@@ -186,6 +249,8 @@ void setup()
     // Bring up sensors one at a time, moving the first off the default address.
     setupSensor(sensorA, XSHUT_A, ADDR_A, "Sensor A");
     setupSensor(sensorB, XSHUT_B, ADDR_B, "Sensor B");
+    setupSensor(sensorC, XSHUT_C, ADDR_C, "Sensor C");
+    setupSensor(sensorD, XSHUT_D, ADDR_D, "Sensor D");
     startTime = millis();
 }
 
