@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ViviSense Occupancy Grid</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 16px;
+      background: #f5f7fb;
+      color: #1d2430;
+    }
+    .row {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+    .panel {
+      background: white;
+      border: 1px solid #d8deea;
+      border-radius: 8px;
+      padding: 12px;
+    }
+    #gridCanvas {
+      border: 1px solid #444;
+      background: #101820;
+      image-rendering: pixelated;
+    }
+    label {
+      margin-right: 10px;
+    }
+    button {
+      margin-right: 8px;
+      padding: 6px 10px;
+    }
+    .zone {
+      font-size: 14px;
+      margin-bottom: 6px;
+    }
+    .sev-safe { color: #1f8b4c; font-weight: bold; }
+    .sev-warning { color: #c27803; font-weight: bold; }
+    .sev-urgent { color: #bf1b1b; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h2>ViviSense 2D Occupancy Grid</h2>
+
+  <div class="panel">
+    <label>WS:
+      <input id="wsUrl" size="36" />
+    </label>
+    <button id="connectBtn">Connect</button>
+    <span id="connState">Disconnected</span>
+  </div>
+
+  <div class="panel" style="margin-top:10px;">
+    <label>
+      <input id="showInflated" type="checkbox" checked />
+      Show Inflated Occupancy
+    </label>
+
+    <label>
+      Duration (s):
+      <input id="durationSec" type="number" min="1" max="120" value="10" />
+    </label>
+    <button id="startLogBtn">Start Recording</button>
+    <button id="stopLogBtn">Stop</button>
+    <span id="logState">Logging: false</span>
+    <span style="margin-left:12px;" id="fpsState">FPS: 0</span>
+  </div>
+
+  <div class="row" style="margin-top:10px;">
+    <div class="panel">
+      <canvas id="gridCanvas" width="600" height="600"></canvas>
+      <div style="margin-top:8px;font-size:13px;">
+        +X forward is up on screen, +Y left is left on screen.
+      </div>
+    </div>
+
+    <div class="panel" style="min-width:260px;">
+      <h3 style="margin-top:0;">Zone Severity</h3>
+      <div id="zoneFront" class="zone">Front: -</div>
+      <div id="zoneLeft" class="zone">Left: -</div>
+      <div id="zoneRight" class="zone">Right: -</div>
+      <div id="zoneRear" class="zone">Rear: -</div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

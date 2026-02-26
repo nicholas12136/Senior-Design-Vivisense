@@ -9,6 +9,9 @@ struct Vec3
     float x = 0.0f;
     float y = 0.0f;
     float z = 0.0f;
+
+    Vec3() = default;
+    Vec3(float xIn, float yIn, float zIn) : x(xIn), y(yIn), z(zIn) {}
 };
 
 struct Mat3
@@ -114,7 +117,12 @@ static Mat3 rotationZ(float gammaRad)
 
 // Convention used:
 // R = Rz(gamma) * Ry(beta) * Rx(alpha)
-//Rotate about fixed z then fixed y then fixed x or XYZ with current axis
+// When applying p_world = R * p_sensor, the rightmost matrix acts first:
+//   1) rotate about X by alpha
+//   2) rotate about Y by beta
+//   3) rotate about Z by gamma
+// This is commonly treated as extrinsic rotations about fixed axes (X, then Y, then Z).
+// It is NOT intrinsic XYZ about the sensor's continuously-updated local axes.
 static Mat3 makeSensorRotation(float alphaRad, float betaRad, float gammaRad)
 {
     // Composes Euler rotations into a single sensor-to-world rotation matrix.
@@ -164,6 +172,9 @@ public:
     uint16_t cellDistanceMm[kNumCells]{};
     uint8_t targetStatus[kNumCells]{};
     uint8_t numTargets[kNumCells]{};
+    
+    // Cached derived world points (latest computed frame)
+    Point latestWorldPoints[kNumCells]{};
 
     Sensor() = default;
 
@@ -184,6 +195,7 @@ public:
             cellDistanceMm[i] = 0;
             targetStatus[i] = 0;
             numTargets[i] = 0;
+            latestWorldPoints[i] = Point{};
         }
     }
 
@@ -236,6 +248,14 @@ public:
         return point;
     }
 
+    void computeLatestWorldPoints()
+    {
+        for (int cell = 0; cell < kNumCells; cell++)
+        {
+            latestWorldPoints[cell] = createWorldPointFromCell(cell);
+        }
+    }
+
     // Debug print of the raw arrays (distance/status/numTargets)
     void printRawCellData() const
     {
@@ -278,7 +298,7 @@ private:
             row = 3 - row; // flip vertical
             col = 3 - col; // flip horizontal
 
-            float thetaDeg = halfFovDeg - (col + 0.5f) * stepDeg;  // left(+) to right(-)
+            float thetaDeg = -halfFovDeg + (col + 0.5f) * stepDeg;  // left(+) to right(-)
             float phiDeg   = -halfFovDeg + (row + 0.5f) * stepDeg; // down(-) to up(+)
 
             float thetaRad = degreesToRadians(thetaDeg);
