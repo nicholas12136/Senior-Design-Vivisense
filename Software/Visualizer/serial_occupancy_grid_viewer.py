@@ -18,8 +18,9 @@ import serial.tools.list_ports
 
 ONLINE_TIMEOUT_S = 1.5
 INCH_TO_M = 0.0254
-WHEELCHAIR_LENGTH_M = 25.0 * INCH_TO_M
-WHEELCHAIR_WIDTH_M = 27.5 * INCH_TO_M
+WHEELCHAIR_LENGTH_M = 31.0 * INCH_TO_M
+WHEELCHAIR_WIDTH_M = 23.0 * INCH_TO_M
+WHEELCHAIR_FRONT_OFFSET_M = 7.0 * INCH_TO_M
 SENSOR_RGB = {
     1: (230, 57, 70),
     2: (244, 162, 97),
@@ -136,6 +137,8 @@ class App:
         self.last_frame_local_s = {sid: 0.0 for sid in range(1, 9)}
         self.rx_hz_by_sensor = {sid: 0.0 for sid in range(1, 9)}
         self.pkts_by_sensor = {sid: 0 for sid in range(1, 9)}
+        self.conv_us_last_by_sensor = {sid: 0 for sid in range(1, 9)}
+        self.conv_us_avg_by_sensor = {sid: 0.0 for sid in range(1, 9)}
         self._last_draw_s = 0.0
         self.stability_counts = None
         self.stability_shape = None
@@ -201,7 +204,7 @@ class App:
 
         left_wrap = ttk.Frame(body)
         left_wrap.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
-        self.left_canvas = tk.Canvas(left_wrap, width=260, highlightthickness=0)
+        self.left_canvas = tk.Canvas(left_wrap, width=420, highlightthickness=0)
         self.left_scroll = ttk.Scrollbar(left_wrap, orient=tk.VERTICAL, command=self.left_canvas.yview)
         self.left_canvas.configure(yscrollcommand=self.left_scroll.set)
         self.left_canvas.pack(side=tk.LEFT, fill=tk.Y)
@@ -238,7 +241,7 @@ class App:
             ttk.Checkbutton(row, variable=en, command=self._draw).pack(side=tk.LEFT)
             txt = tk.StringVar(value=f"S{sid}: offline pkts=0 hz=0.0")
             self.sensor_status_vars[sid] = txt
-            ttk.Label(row, textvariable=txt, width=30).pack(side=tk.LEFT)
+            ttk.Label(row, textvariable=txt, width=52).pack(side=tk.LEFT)
 
         ttk.Label(left, text="Filters").pack(anchor="w", pady=(10, 0))
         self.status_filter_var = tk.StringVar(value="5")
@@ -247,7 +250,7 @@ class App:
         ttk.Label(left, text="Blank = all, e.g. 5 or 5,9,13", width=34).pack(anchor="w")
         self.show_invalid_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(left, text="Include invalid points", variable=self.show_invalid_var, command=self._draw).pack(anchor="w")
-        self.zmin_var = tk.StringVar(value="0.0")
+        self.zmin_var = tk.StringVar(value="0.2")
         self.zmax_var = tk.StringVar(value="2.5")
         ttk.Label(left, text="Z min,max (m)").pack(anchor="w")
         zrow = ttk.Frame(left)
@@ -316,7 +319,7 @@ class App:
         irow = ttk.Frame(left)
         irow.pack(anchor="w")
         ttk.Label(irow, text="Radius (m)").pack(side=tk.LEFT)
-        self.inflate_radius_var = tk.StringVar(value="0.35")
+        self.inflate_radius_var = tk.StringVar(value="0.1")
         ttk.Entry(irow, textvariable=self.inflate_radius_var, width=6).pack(side=tk.LEFT, padx=(4, 0))
 
         self.record_status_var = tk.StringVar(value="CSV: idle")
@@ -366,6 +369,8 @@ class App:
             self.last_frame_local_s[sid] = 0.0
             self.rx_hz_by_sensor[sid] = 0.0
             self.pkts_by_sensor[sid] = 0
+            self.conv_us_last_by_sensor[sid] = 0
+            self.conv_us_avg_by_sensor[sid] = 0.0
 
     def open_csv_dialog(self):
         path = filedialog.askopenfilename(
@@ -611,7 +616,7 @@ class App:
 
         if line.startswith("S,"):
             parts = line.split(",")
-            if len(parts) != 4:
+            if len(parts) < 4:
                 return
             try:
                 sid = int(parts[1])
@@ -622,6 +627,14 @@ class App:
             if sid in self.pkts_by_sensor:
                 self.pkts_by_sensor[sid] = pkts
                 self.rx_hz_by_sensor[sid] = hz
+                # Optional fields from firmware:
+                # S,sid,pkts,rx_hz,conv_us_last,conv_us_avg
+                if len(parts) >= 6:
+                    try:
+                        self.conv_us_last_by_sensor[sid] = int(parts[4])
+                        self.conv_us_avg_by_sensor[sid] = float(parts[5])
+                    except ValueError:
+                        pass
             return
 
         if line.startswith("INFO,open,"):
@@ -667,8 +680,10 @@ class App:
     def _draw_wheelchair_footprint(self):
         if not self.show_wheelchair_var.get():
             return
+        # World-frame origin is 7 inches behind the wheelchair front-center.
         # Apply same display rotation as grid: -90 deg (clockwise) in XY.
-        x0, x1 = -WHEELCHAIR_LENGTH_M, 0.0
+        x1 = WHEELCHAIR_FRONT_OFFSET_M
+        x0 = x1 - WHEELCHAIR_LENGTH_M
         y0, y1 = -WHEELCHAIR_WIDTH_M * 0.5, WHEELCHAIR_WIDTH_M * 0.5
         xs = [x0, x1, x1, x0, x0]
         ys = [y0, y0, y1, y1, y0]
@@ -793,13 +808,17 @@ class App:
             self.stability_shape = None
             occ_for_detection = raw_occ.copy()
 
+        # When temporal stability is enabled, use the stable mask as a hard
+        # display filter so cells that have not persisted for N frames are hidden.
+        occ_for_display = occ_for_detection if self.temporal_enable_var.get() else raw_occ
+
         inflate_cells = int(round(inflate_radius_m / cell)) if cell > 0 else 0
         inflated_occ = self._inflate_mask(occ_for_detection, inflate_cells) if self.inflate_enable_var.get() else occ_for_detection.copy()
 
         if mode == "binary":
             if self.binary_sensor_color_var.get():
                 display = np.zeros_like(sensor_grid, dtype=np.uint8)
-                occupied = raw_occ
+                occupied = occ_for_display
                 display[occupied] = sensor_grid[occupied]
                 colors = ["#ffffff"] + [f"#{r:02x}{g:02x}{b:02x}" for _, (r, g, b) in sorted(SENSOR_RGB.items())]
                 cmap = ListedColormap(colors)
@@ -811,7 +830,8 @@ class App:
                 norm = None
                 vmax = 1
         else:
-            display = grid
+            # In count mode, hide unstable cells when temporal stability is enabled.
+            display = np.where(occ_for_display, grid, 0)
             cmap = "viridis"
             norm = None
             vmax = max(int(grid.max()), threshold)
@@ -879,7 +899,7 @@ class App:
             online = self.frames_by_sensor[sid] and ((now - self.last_frame_local_s[sid]) < ONLINE_TIMEOUT_S)
             state = "online" if online else "offline"
             self.sensor_status_vars[sid].set(
-                f"S{sid}: {state:<7} pkts={self.pkts_by_sensor[sid]:<6} hz={self.rx_hz_by_sensor[sid]:>4.1f}"
+                f"S{sid}: {state:<7} pkts={self.pkts_by_sensor[sid]:<6} hz={self.rx_hz_by_sensor[sid]:>4.1f} conv_us={self.conv_us_last_by_sensor[sid]:>4}/{self.conv_us_avg_by_sensor[sid]:>5.1f}"
             )
 
     def _tick(self):

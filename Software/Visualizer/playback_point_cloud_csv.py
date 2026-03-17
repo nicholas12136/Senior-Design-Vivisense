@@ -21,20 +21,23 @@ COLORS = {
     8: "#6a4c93",
 }
 INCH_TO_M = 0.0254
-WHEELCHAIR_LENGTH_M = 25.0 * INCH_TO_M
-WHEELCHAIR_WIDTH_M = 27.5 * INCH_TO_M
+WHEELCHAIR_LENGTH_M = 31.0 * INCH_TO_M
+WHEELCHAIR_WIDTH_M = 23.0 * INCH_TO_M
 WHEELCHAIR_HEIGHT_M = 37.0 * INCH_TO_M
+WHEELCHAIR_FRONT_OFFSET_M = 7.0 * INCH_TO_M
 DEFAULT_VIEW_ELEV = 22
-DEFAULT_VIEW_AZIM = 180
+DEFAULT_VIEW_AZIM = 120
 TOP_VIEW_ELEV = 90
-TOP_VIEW_AZIM = -90
-BEHIND_VIEW_ELEV = 18
+TOP_VIEW_AZIM = 180
+BEHIND_VIEW_ELEV = 25
 BEHIND_VIEW_AZIM = 180
 
 
 def draw_wheelchair_box(ax):
-    # World-frame origin is the wheelchair front-center-bottom.
-    x0, x1 = -WHEELCHAIR_LENGTH_M, 0.0
+    # World-frame origin is 7 inches behind the wheelchair front-center.
+    # +X is forward, so front is at +WHEELCHAIR_FRONT_OFFSET_M and rear is behind it.
+    x1 = WHEELCHAIR_FRONT_OFFSET_M
+    x0 = x1 - WHEELCHAIR_LENGTH_M
     y0, y1 = -WHEELCHAIR_WIDTH_M * 0.5, WHEELCHAIR_WIDTH_M * 0.5
     z0, z1 = 0.0, WHEELCHAIR_HEIGHT_M
     pts = {
@@ -97,6 +100,7 @@ class PlaybackApp:
         self.play_started_monotonic = 0.0
         self.play_started_event_time = 0.0
         self._view_initialized = False
+        self._last_draw_s = 0.0
 
         self._build_ui()
         if csv_path:
@@ -181,7 +185,7 @@ class PlaybackApp:
             orient=tk.HORIZONTAL,
             variable=self.slider_var,
             command=self._on_slider,
-            label="Frame Event",
+            label="t=0.00s",
         )
         self.slider.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(0, 8))
 
@@ -267,7 +271,6 @@ class PlaybackApp:
             self._rebuild_state_to_index(idx)
         self.slider_var.set(idx)
         self._update_status()
-        self._draw()
 
     def _event_time_s(self, idx: int) -> float:
         if idx < 0 or idx >= len(self.events):
@@ -277,8 +280,12 @@ class PlaybackApp:
     def _update_status(self):
         if self.current_idx < 0 or not self.events:
             self.status_var.set("No frame selected")
+            self.slider.configure(label="t=0.00s")
             return
         ev = self.events[self.current_idx]
+        t0 = self._event_time_s(0)
+        t_rel = self._event_time_s(self.current_idx) - t0
+        self.slider.configure(label=f"t={t_rel:.2f}s")
         total_rows = sum(len(self.latest_points_by_sensor[s]) for s in self.latest_points_by_sensor)
         self.status_var.set(
             f"Event {self.current_idx + 1}/{len(self.events)}  sid={ev['sid']}  ts_ms={ev['ts_ms']}  "
@@ -395,7 +402,10 @@ class PlaybackApp:
         self.playing = not self.playing
         self.play_btn.configure(text="Pause" if self.playing else "Play")
         if self.playing:
-            if self.current_idx < 0:
+            # If playback is at the last event, restart from the beginning.
+            if self.current_idx >= len(self.events) - 1:
+                self._set_index(0)
+            elif self.current_idx < 0:
                 self._set_index(0)
             self.play_started_monotonic = time.monotonic()
             self.play_started_event_time = self._event_time_s(self.current_idx)
@@ -452,10 +462,16 @@ class PlaybackApp:
                 self.playing = False
                 self.play_btn.configure(text="Play")
                 self.play_started_monotonic = 0.0
-            self.root.after(20 if advanced else 40, self._tick)
-            return
+            if not advanced:
+                # Keep the playback clock label moving even between sparse events.
+                self._update_status()
 
-        self.root.after(80, self._tick)
+        now = time.time()
+        if (now - self._last_draw_s) >= 0.08:
+            self._draw()
+            self._last_draw_s = now
+
+        self.root.after(40, self._tick)
 
     def _on_close(self):
         self.root.destroy()

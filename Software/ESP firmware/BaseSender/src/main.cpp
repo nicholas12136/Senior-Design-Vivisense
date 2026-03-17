@@ -32,6 +32,7 @@ constexpr uint8_t ADDR_D = 0x34;
 const uint8_t baseMac[6] = {0x5C, 0x01, 0x3B, 0x88, 0x04, 0x58}; // Wroom32
 uint32_t startTime;
 const uint8_t ESPNOW_CHANNEL = 1; // Must match baseReciever AP_CHANNEL
+const uint8_t LATENCY_TEST_MODE = 0; // Set to 0 to disable clock-sync latency test mode.
 
 // --- Types ---------------------------------------------------------------------
 struct SensorPacket
@@ -43,6 +44,38 @@ struct SensorPacket
   uint8_t nb_targets[16];
 } __attribute__((packed));
 
+struct SensorPacketV2
+{
+  uint8_t sensor_id;
+  uint32_t timestamp_ms;
+  uint16_t distance_mm[16];
+  uint8_t target_status[16];
+  uint8_t nb_targets[16];
+  uint16_t seq;
+  uint32_t t_send_us;
+} __attribute__((packed));
+
+const uint8_t MSG_SYNC_REQ = 0xA1;
+const uint8_t MSG_SYNC_RESP = 0xA2;
+
+struct SyncRequestPacket
+{
+  uint8_t msg_type;
+  uint8_t sensor_id;
+  uint16_t seq;
+  uint32_t t1_base_us;
+} __attribute__((packed));
+
+struct SyncResponsePacket
+{
+  uint8_t msg_type;
+  uint8_t sensor_id;
+  uint16_t seq;
+  uint32_t t1_base_us;
+  uint32_t t2_pod_us;
+  uint32_t t3_pod_us;
+} __attribute__((packed));
+
 // --- State ---------------------------------------------------------------------
 SparkFun_VL53L5CX sensorA;
 SparkFun_VL53L5CX sensorB;
@@ -52,6 +85,7 @@ VL53L5CX_ResultsData resultsA;
 VL53L5CX_ResultsData resultsB;
 VL53L5CX_ResultsData resultsC;
 VL53L5CX_ResultsData resultsD;
+uint16_t dataSeqBySensor[9] = {0}; // indexed by sensor ID (1..8)
 
 // --- ESP-NOW helpers -----------------------------------------------------------
 void onEspNowSent(const uint8_t *mac, esp_now_send_status_t status)
@@ -63,6 +97,39 @@ void onEspNowSent(const uint8_t *mac, esp_now_send_status_t status)
     Serial.print((int)status);
     Serial.println(")");
   }
+}
+
+void onEspNowRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
+{
+  if (!LATENCY_TEST_MODE)
+  {
+    return;
+  }
+  if (len != (int)sizeof(SyncRequestPacket))
+  {
+    return;
+  }
+
+  SyncRequestPacket req;
+  memcpy(&req, incomingData, sizeof(req));
+  if (req.msg_type != MSG_SYNC_REQ)
+  {
+    return;
+  }
+  if (req.sensor_id != SENSOR_A_ID && req.sensor_id != SENSOR_B_ID &&
+      req.sensor_id != SENSOR_C_ID && req.sensor_id != SENSOR_D_ID)
+  {
+    return;
+  }
+
+  SyncResponsePacket resp;
+  resp.msg_type = MSG_SYNC_RESP;
+  resp.sensor_id = req.sensor_id;
+  resp.seq = req.seq;
+  resp.t1_base_us = req.t1_base_us;
+  resp.t2_pod_us = micros();
+  resp.t3_pod_us = micros();
+  esp_now_send(mac, (uint8_t *)&resp, sizeof(resp));
 }
 
 bool addEspNowPeer(const uint8_t *mac)
@@ -138,16 +205,33 @@ void trySendSensor(SparkFun_VL53L5CX &sensor,
   }
 
   SensorPacket pkt{};
-  pkt.sensor_id = sensorId;
-  pkt.timestamp_ms = (millis() - startTime);
-  for (uint8_t i = 0; i < 16; ++i)
+  if (LATENCY_TEST_MODE)
   {
-    pkt.distance_mm[i] = results.distance_mm[i];
-    pkt.target_status[i] = results.target_status[i];
-    pkt.nb_targets[i] = results.nb_target_detected[i];
+    SensorPacketV2 pkt2;
+    pkt2.sensor_id = sensorId;
+    pkt2.timestamp_ms = (millis() - startTime);
+    for (uint8_t i = 0; i < 16; ++i)
+    {
+      pkt2.distance_mm[i] = results.distance_mm[i];
+      pkt2.target_status[i] = results.target_status[i];
+      pkt2.nb_targets[i] = results.nb_target_detected[i];
+    }
+    pkt2.seq = ++dataSeqBySensor[sensorId];
+    pkt2.t_send_us = micros();
+    esp_now_send(baseMac, (uint8_t *)&pkt2, sizeof(pkt2));
   }
-
-  esp_now_send(baseMac, (uint8_t *)&pkt, sizeof(pkt));
+  else
+  {
+    pkt.sensor_id = sensorId;
+    pkt.timestamp_ms = (millis() - startTime);
+    for (uint8_t i = 0; i < 16; ++i)
+    {
+      pkt.distance_mm[i] = results.distance_mm[i];
+      pkt.target_status[i] = results.target_status[i];
+      pkt.nb_targets[i] = results.nb_target_detected[i];
+    }
+    esp_now_send(baseMac, (uint8_t *)&pkt, sizeof(pkt));
+  }
 }
 
 // --- Arduino lifecycle ---------------------------------------------------------
@@ -187,6 +271,7 @@ void setup()
     return;
   }
   esp_now_register_send_cb(onEspNowSent);
+  esp_now_register_recv_cb(onEspNowRecv);
   addEspNowPeer(baseMac);
 
   // Bring up sensors one at a time, moving the first off the default address.

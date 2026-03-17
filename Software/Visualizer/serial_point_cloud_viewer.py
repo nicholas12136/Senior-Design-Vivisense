@@ -27,21 +27,29 @@ COLORS = {
 }
 
 ONLINE_TIMEOUT_S = 1.5
+UI_TICK_MS = 20
+DEFAULT_DRAW_FPS = 15.0
 INCH_TO_M = 0.0254
-WHEELCHAIR_LENGTH_M = 25.0 * INCH_TO_M
-WHEELCHAIR_WIDTH_M = 27.5 * INCH_TO_M
+WHEELCHAIR_LENGTH_M = 31.0 * INCH_TO_M
+WHEELCHAIR_WIDTH_M = 23.0 * INCH_TO_M
 WHEELCHAIR_HEIGHT_M = 37.0 * INCH_TO_M
+WHEELCHAIR_FRONT_OFFSET_M = 7.0 * INCH_TO_M
 DEFAULT_VIEW_ELEV = 22
 DEFAULT_VIEW_AZIM = 120
 TOP_VIEW_ELEV = 90
 TOP_VIEW_AZIM = 180
 BEHIND_VIEW_ELEV = 25
 BEHIND_VIEW_AZIM = 180
+SIDE_VIEW_ELEV = 12
+SIDE_VIEW_AZIM = 90
+DEFAULT_Z_MAX_M = 5.0
 
 
 def draw_wheelchair_box(ax):
-    # World-frame origin is the wheelchair front-center-bottom.
-    x0, x1 = -WHEELCHAIR_LENGTH_M, 0.0
+    # World-frame origin is 7 inches behind the wheelchair front-center.
+    # +X is forward, so front is at +WHEELCHAIR_FRONT_OFFSET_M and rear is behind it.
+    x1 = WHEELCHAIR_FRONT_OFFSET_M
+    x0 = x1 - WHEELCHAIR_LENGTH_M
     y0, y1 = -WHEELCHAIR_WIDTH_M * 0.5, WHEELCHAIR_WIDTH_M * 0.5
     z0, z1 = 0.0, WHEELCHAIR_HEIGHT_M
     pts = {
@@ -81,7 +89,8 @@ def list_ports():
 
 class SerialReader:
     def __init__(self):
-        self.rx_queue = queue.Queue(maxsize=5000)
+        # Larger queue prevents line drops when plotting briefly stalls.
+        self.rx_queue = queue.Queue(maxsize=30000)
         self._thread = None
         self._stop = threading.Event()
         self._serial = None
@@ -174,7 +183,7 @@ class App:
         self.axis_limit = axis_limit
         self.xlim = xlim if xlim is not None else (-axis_limit, axis_limit)
         self.ylim = ylim if ylim is not None else (-axis_limit, axis_limit)
-        self.zlim = zlim if zlim is not None else (0.0, axis_limit * 2.0)
+        self.zlim = zlim if zlim is not None else (0.0, DEFAULT_Z_MAX_M)
         self.major_tick_m = major_tick_m
         self.reader = SerialReader()
 
@@ -192,10 +201,12 @@ class App:
         self.csv_filename = ""
         self.csv_rows = 0
         self._view_initialized = False
+        self.draw_fps = DEFAULT_DRAW_FPS
+        self._last_draw_monotonic = 0.0
 
         self._build_ui(default_port, baud)
         self.refresh_ports()
-        self.root.after(80, self._tick)
+        self.root.after(UI_TICK_MS, self._tick)
 
     def _build_ui(self, default_port: str | None, baud: int):
         top = ttk.Frame(self.root, padding=8)
@@ -266,6 +277,7 @@ class App:
         ttk.Button(view_row, text="Default", command=self.set_view_default).pack(side=tk.LEFT)
         ttk.Button(view_row, text="Behind", command=self.set_view_behind).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Button(view_row, text="Top", command=self.set_view_top).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(view_row, text="Side", command=self.set_view_side).pack(side=tk.LEFT, padx=(4, 0))
 
         ttk.Label(left, text="CSV Recording").pack(anchor="w", pady=(10, 0))
         rec_row = ttk.Frame(left)
@@ -438,7 +450,7 @@ class App:
 
         if line.startswith("S,"):
             parts = line.split(",")
-            if len(parts) != 4:
+            if len(parts) < 4:
                 return
             try:
                 sid = int(parts[1])
@@ -485,7 +497,7 @@ class App:
 
     def _drain_serial_queue(self):
         processed = 0
-        while processed < 3000:
+        while processed < 12000:
             try:
                 line = self.reader.rx_queue.get_nowait()
             except queue.Empty:
@@ -542,6 +554,10 @@ class App:
 
         allowed_status = self._parse_status_filter()
         total_pts = 0
+        xs_all = []
+        ys_all = []
+        zs_all = []
+        cs_all = []
         for sid in range(1, 9):
             if not self.sensor_enabled_vars[sid].get():
                 continue
@@ -555,17 +571,20 @@ class App:
             draw_pts = [p for p in draw_pts if p[1]]
             if not draw_pts:
                 continue
-            xs = [p[2] for p in draw_pts]
-            ys = [p[3] for p in draw_pts]
-            zs = [p[4] for p in draw_pts]
-            self.ax.scatter(xs, ys, zs, s=18, color=COLORS.get(sid, "#333333"), label=f"S{sid}")
+            color = COLORS.get(sid, "#333333")
+            for p in draw_pts:
+                xs_all.append(p[2])
+                ys_all.append(p[3])
+                zs_all.append(p[4])
+                cs_all.append(color)
             total_pts += len(draw_pts)
 
         if total_pts:
-            self.ax.legend(loc="upper left", fontsize=8)
+            # Single scatter call is much faster than per-sensor scatter + legend rebuild.
+            self.ax.scatter(xs_all, ys_all, zs_all, s=18, c=cs_all, depthshade=False)
 
         port_text = self.port_var.get().strip() or "no-port"
-        self.ax.set_title(f"{port_text}  points={total_pts}")
+        self.ax.set_title(f"{port_text}  points={total_pts}  draw_fps={self.draw_fps:.0f}  q={self.reader.rx_queue.qsize()}")
         self.canvas.draw_idle()
 
     def _parse_status_filter(self):
@@ -608,13 +627,20 @@ class App:
     def set_view_top(self):
         self._set_view(TOP_VIEW_ELEV, TOP_VIEW_AZIM)
 
+    def set_view_side(self):
+        self._set_view(SIDE_VIEW_ELEV, SIDE_VIEW_AZIM)
+
     def _tick(self):
         self._drain_serial_queue()
         if self.recording and time.time() >= self.record_end_time_s:
             self.stop_recording()
         self._update_status_panel()
-        self._draw_plot()
-        self.root.after(80, self._tick)
+        now = time.monotonic()
+        draw_period_s = 1.0 / self.draw_fps if self.draw_fps > 0.0 else 0.0
+        if (now - self._last_draw_monotonic) >= draw_period_s:
+            self._draw_plot()
+            self._last_draw_monotonic = now
+        self.root.after(UI_TICK_MS, self._tick)
 
     def _on_close(self):
         self.stop_recording()
@@ -631,7 +657,7 @@ def main():
     parser = argparse.ArgumentParser(description="Live 3D point cloud viewer over serial (ViviSense receiver)")
     parser.add_argument("--port", default=default_port(), help="Default serial port (e.g. COM5)")
     parser.add_argument("--baud", type=int, default=921600, help="Default serial baud rate")
-    parser.add_argument("--axis", type=float, default=3.5, help="Symmetric XY axis limit in meters; Z defaults to 0..2*axis")
+    parser.add_argument("--axis", type=float, default=3.5, help="Symmetric XY axis limit in meters")
     parser.add_argument("--xlim", type=str, default=None, help="X axis range in meters as min,max (e.g. -2.5,2.5)")
     parser.add_argument("--ylim", type=str, default=None, help="Y axis range in meters as min,max")
     parser.add_argument("--zlim", type=str, default=None, help="Z axis range in meters as min,max")
