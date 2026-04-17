@@ -664,6 +664,7 @@ void setup() {
   // LED ring
   strip.begin();
   strip.setBrightness(255); // per-LED scaling handled in lightUpZone
+  strip.setPixelColor(5,555);
   strip.show();
 
   // SPIFFS (serves the TypeScript UI)
