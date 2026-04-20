@@ -8,8 +8,8 @@
  *
  * Hardware:
  *   - ESP32 DoIT DevKit V1
- *   - 93-LED NeoPixel ring on GPIO 18
  *   - MAX98357A I2S amp: BCK=27, WS=26, DO=25
+ *   - LED ring driven by a separate ESP32 via ESP-NOW
  *
  * Audio:
  *   - Copy audio_files/ from the webserver project into this directory
@@ -35,17 +35,21 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <Adafruit_NeoPixel.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
 #include <SPIFFS.h>
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include "driver/i2s.h"
 #include "sounds.h"
+#include "led_frame.h"
 #include <math.h>
 
-// ── Pin & hardware config ─────────────────────────────────────────────────────
-#define LED_PIN   5
-#define NUM_LEDS  93
+// ── Hardware config ───────────────────────────────────────────────────────────
+#define NUM_LEDS       93
+#define ESPNOW_CHANNEL  1   // must match the LED ESP32's channel
+
+static uint8_t LED_ESP32_MAC[] = {0xE0, 0x8C, 0xFE, 0xB4, 0xE0, 0x6C};
 
 #define I2S_BCK_IO  27
 #define I2S_WS_IO   26
@@ -57,8 +61,6 @@ const char* WIFI_SSID = "ViviSense";
 const char* WIFI_PASS = "ViviSense123";
 
 // ── Runtime state ─────────────────────────────────────────────────────────────
-Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
-
 int currentBrightness = 64;   // 0–64  (maps from 0–100% slider, capped at 25% of LED max)
 int currentZoneMode   = 6;    // 4, 6, or 8
 int currentVolume     = 255;  // 0–255
@@ -188,38 +190,53 @@ int r6_8_S[]  = {14, 15, 16, 17, -1};  int r6_8_SW[] = {18, 19, 20, 21, -1};
 int r6_8_W[]  = {22, 23, 24, 25, -1};  int r6_8_NW[] = {26, 27, 28, 29, -1};
 
 // =========================================================
-// COLORS  — match the UI constants (RED=#ff2222, YELLOW=#ff8800, GREEN=#ffdd00)
-// =========================================================
-#define COLOR_RED    0xFF0000  // red    — close/danger
-#define COLOR_YELLOW 0xFF5500  // orange — medium (saturated, clearly distinct from red and yellow)
-#define COLOR_GREEN  0xFFEE00  // yellow — far/safe (bright, clearly distinct from orange)
-
-uint32_t ringColors[] = {
-  0,
-  COLOR_RED,    // Ring 1
-  COLOR_RED,    // Ring 2
-  COLOR_YELLOW, // Ring 3
-  COLOR_YELLOW, // Ring 4
-  COLOR_GREEN,  // Ring 5
-  COLOR_GREEN,  // Ring 6
-};
-
-// =========================================================
-// LED HELPERS
+// ESP-NOW HELPERS
 // =========================================================
 
-void lightUpZone(int* ledArray, uint32_t color) {
-  strip.clear();
-  uint8_t r = ((color >> 16) & 0xFF) * currentBrightness / 255;
-  uint8_t g = ((color >>  8) & 0xFF) * currentBrightness / 255;
-  uint8_t b = ((color      ) & 0xFF) * currentBrightness / 255;
-  uint32_t dimColor = strip.Color(r, g, b);
+static uint8_t ringToColorCode(int ring) {
+  if (ring <= 2) return LED_COLOR_RED;
+  if (ring <= 4) return LED_COLOR_ORANGE;
+  return LED_COLOR_YELLOW;
+}
 
+static void fillZoneInFrame(LedFrame_t& frame, int* ledArray, uint8_t colorCode) {
   for (int i = 0; ledArray[i] != -1; i++) {
     int led = ledArray[i];
-    if (led >= 0 && led < NUM_LEDS) strip.setPixelColor(led, dimColor);
+    if (led >= 0 && led < NUM_LEDS) frame.leds[led] = colorCode;
   }
-  strip.show();
+}
+
+static void sendLedFrame(const LedFrame_t& frame) {
+  esp_err_t err = esp_now_send(LED_ESP32_MAC, (const uint8_t*)&frame, sizeof(LedFrame_t));
+  if (err != ESP_OK) Serial.printf("[ESP-NOW] Send error: 0x%x\n", err);
+}
+
+static void sendClearFrame() {
+  LedFrame_t frame = {};
+  frame.brightness = (uint8_t)currentBrightness;
+  sendLedFrame(frame);
+}
+
+static void onEspNowSent(const uint8_t* mac, esp_now_send_status_t status) {
+  Serial.printf("[ESP-NOW] Send %s\n", status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAILED");
+}
+
+void initEspNow() {
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("[ESP-NOW] Init FAILED");
+    return;
+  }
+  esp_now_register_send_cb(onEspNowSent);
+  esp_now_peer_info_t peerInfo = {};
+  memcpy(peerInfo.peer_addr, LED_ESP32_MAC, 6);
+  peerInfo.channel = ESPNOW_CHANNEL;
+  peerInfo.ifidx   = WIFI_IF_AP;   // main ESP32 is AP-only; send via AP interface
+  peerInfo.encrypt = false;
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("[ESP-NOW] Add peer FAILED");
+  } else {
+    Serial.println("[ESP-NOW] Peer registered — LED ESP32 ready");
+  }
 }
 
 // Recalculate all ring boundaries from the two color-transition thresholds.
@@ -252,18 +269,11 @@ static const float ZONE4_ANGLES[] = {0, 90, 180, -90};
 static const float ZONE6_ANGLES[] = {0, 60, 120, 180, -120, -60};
 static const float ZONE8_ANGLES[] = {0, 45, 90, 135, 180, -135, -90, -45};
 
-// Scale a packed 0xRRGGBB color by a 0-255 brightness factor.
-uint32_t applyBrightness(uint32_t color, int brightness) {
-  uint8_t r = ((color >> 16) & 0xFF) * brightness / 255;
-  uint8_t g = ((color >>  8) & 0xFF) * brightness / 255;
-  uint8_t b = ((color      ) & 0xFF) * brightness / 255;
-  return strip.Color(r, g, b);
-}
-
 // Light the full ring as it appears in the Live Preview on the UI:
 // all rings shown simultaneously, only active sectors lit, colour based on thresholds.
 void lightPreview() {
-  strip.clear();
+  LedFrame_t frame = {};
+  frame.brightness = (uint8_t)previewBrightness;
 
   int zoneCount = previewZoneMode;
   const float* zoneAngles = (zoneCount == 4) ? ZONE4_ANGLES :
@@ -272,12 +282,10 @@ void lightPreview() {
   for (int ring = 1; ring <= 6; ring++) {
     float dist = PREVIEW_RING_DIST_MM[ring];
 
-    uint32_t color;
-    if      (dist <= previewRedMm)    color = COLOR_RED;
-    else if (dist <= previewYellowMm) color = COLOR_YELLOW;
-    else                              color = COLOR_GREEN;
-
-    uint32_t dimColor = applyBrightness(color, previewBrightness);
+    uint8_t colorCode;
+    if      (dist <= previewRedMm)    colorCode = LED_COLOR_RED;
+    else if (dist <= previewYellowMm) colorCode = LED_COLOR_ORANGE;
+    else                              colorCode = LED_COLOR_YELLOW;
 
     for (int z = 0; z < zoneCount; z++) {
       if (!previewActiveSectors[z]) continue;
@@ -291,13 +299,10 @@ void lightPreview() {
       } else {
         leds = getZone6(ring, zoneAngles[z]);
       }
-      for (int i = 0; leds[i] != -1; i++) {
-        int led = leds[i];
-        if (led >= 0 && led < NUM_LEDS) strip.setPixelColor(led, dimColor);
-      }
+      fillZoneInFrame(frame, leds, colorCode);
     }
   }
-  strip.show();
+  sendLedFrame(frame);
 }
 
 // =========================================================
@@ -432,13 +437,12 @@ int getZoneIndex(float angleDeg, int zoneMode) {
 }
 
 void processCoordinates(float x, float y) {
-  if (previewMode) return;  // hands are on the preview — ignore live obstacle data
-  if (!visualEnabled) return; // visual feedback disabled — don't touch the LEDs
+  if (previewMode) return;
+  if (!visualEnabled) return;
   float distance = sqrt(x * x + y * y);
 
   if (distance > 3000.0f) {
-    strip.clear();
-    strip.show();
+    sendClearFrame();
     return;
   }
 
@@ -453,11 +457,9 @@ void processCoordinates(float x, float y) {
   float angleRad = atan2(-y, x);
   float angleDeg = angleRad * (180.0f / PI);
 
-  // If the zone this obstacle falls in is disabled, clear the ring and return.
   // Ring 1 (center LED) is omnidirectional — always shown.
   if (ring != 1 && !currentActiveSectors[getZoneIndex(angleDeg, currentZoneMode)]) {
-    strip.clear();
-    strip.show();
+    sendClearFrame();
     return;
   }
 
@@ -472,7 +474,10 @@ void processCoordinates(float x, float y) {
     zone = getZone6(ring, angleDeg);
   }
 
-  lightUpZone(zone, ringColors[ring]);
+  LedFrame_t frame = {};
+  frame.brightness = (uint8_t)currentBrightness;
+  fillZoneInFrame(frame, zone, ringToColorCode(ring));
+  sendLedFrame(frame);
 }
 
 // =========================================================
@@ -586,7 +591,7 @@ void handleWebSocketMessage(const char* msg) {
     }
     if (!doc["visualEnabled"].isNull()) {
       bool newVis = doc["visualEnabled"].as<bool>();
-      if (visualEnabled && !newVis) { strip.clear(); strip.show(); } // clear immediately on disable
+      if (visualEnabled && !newVis) { sendClearFrame(); }
       visualEnabled = newVis;
     }
     Serial.printf("[Config] zoneMode=%d  brightness=%d%%  audio=%s  visual=%s\n",
@@ -612,8 +617,7 @@ void handleWebSocketMessage(const char* msg) {
     bool active = doc["active"].as<bool>();
     if (!active) {
       previewMode = false;
-      strip.clear();
-      strip.show();
+      sendClearFrame();
       Serial.println("[Preview] Disabled — resuming obstacle detection");
     } else {
       previewMode = true;
@@ -698,11 +702,6 @@ void onWsEvent(AsyncWebSocket* /*server*/, AsyncWebSocketClient* client,
 void setup() {
   Serial.begin(115200);
 
-  // LED ring
-  strip.begin();
-  strip.setBrightness(255); // per-LED scaling handled in lightUpZone
-  strip.show();
-
   // SPIFFS (serves the TypeScript UI)
   if (!SPIFFS.begin(true)) {
     Serial.println("[SPIFFS] Mount failed — UI will not be served");
@@ -711,10 +710,13 @@ void setup() {
   // I2S audio
   setupI2S();
 
-  // WiFi Access Point
-  WiFi.softAP(WIFI_SSID, WIFI_PASS);
+  // WiFi Access Point — channel 1 must match the LED ESP32's ESPNOW_CHANNEL
+  WiFi.softAP(WIFI_SSID, WIFI_PASS, ESPNOW_CHANNEL);
   Serial.print("[WiFi] AP started — IP: ");
   Serial.println(WiFi.softAPIP());
+
+  // ESP-NOW sender (LED ring driven by peer ESP32)
+  initEspNow();
 
   // WebSocket
   wsServer.onEvent(onWsEvent);
