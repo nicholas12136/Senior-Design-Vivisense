@@ -63,3 +63,8 @@ export function sendMessage(msg: object): void {
 export function onMessage(handler: MessageHandler): void {
   messageHandlers.push(handler);
 }
+
+export function offMessage(handler: MessageHandler): void {
+  const idx = messageHandlers.indexOf(handler);
+  if (idx !== -1) messageHandlers.splice(idx, 1);
+}

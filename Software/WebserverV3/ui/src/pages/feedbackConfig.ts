@@ -10,7 +10,7 @@ import {
   type Sector,
   type LEDPosition,
 } from '../utils/ledRing.js';
-import { sendMessage } from '../utils/websocket.js';
+import { sendMessage, onMessage, offMessage } from '../utils/websocket.js';
 
 type FeedbackMode = 'sector' | 'radar';
 type AudioFeedbackMode = 'tonal' | 'verbal';
@@ -24,6 +24,8 @@ interface AdvancedSettings {
 }
 
 interface ConfigState {
+  audioEnabled: boolean;
+  visualEnabled: boolean;
   selectedMode: FeedbackMode | null;
   selectedAudioMode: AudioFeedbackMode | null;
   advanced: AdvancedSettings;
@@ -41,6 +43,8 @@ function buildDefaultSectors(count: SectorCount): Partial<Record<Sector, boolean
 
 function defaultState(): ConfigState {
   return {
+    audioEnabled: false,
+    visualEnabled: false,
     selectedMode: null,
     selectedAudioMode: null,
     advanced: {
@@ -54,6 +58,7 @@ function defaultState(): ConfigState {
 
 let state: ConfigState = defaultState();
 let previewActive = false;
+let configStatusHandler: ((data: unknown) => void) | null = null;
 
 // Ring → approximate max distance in cm (ring 0 = innermost/closest)
 const RING_DISTANCES = [20, 50, 100, 150, 200, 300];
@@ -90,6 +95,8 @@ function sendConfig(): void {
     redThreshold:    thresholds.redMax,
     yellowThreshold: thresholds.yellowMax,
     activeSectors:   activeSectorsArray,
+    audioEnabled:    state.audioEnabled,
+    visualEnabled:   state.visualEnabled,
   });
 }
 
@@ -120,6 +127,80 @@ function renderSectorToggles(): string {
     const isActive = state.advanced.activeSectors[sector] ?? false;
     return `<button class="sector-toggle${isActive ? ' active' : ''}" data-sector="${sector}">${sector}</button>`;
   }).join('');
+}
+
+// Applies a status message from the ESP32 to both state and the live DOM.
+// Called when the device responds to a getConfig request or on WS connect.
+function applyStatus(msg: Record<string, unknown>): void {
+  const zoneMode        = msg['zoneMode']        as number  | undefined;
+  const brightness      = msg['brightness']      as number  | undefined;
+  const redThreshold    = msg['redThreshold']    as number  | undefined;
+  const yellowThreshold = msg['yellowThreshold'] as number  | undefined;
+  const activeSectors   = msg['activeSectors']   as boolean[] | undefined;
+  const audioEn         = msg['audioEnabled']    as boolean | undefined;
+  const visualEn        = msg['visualEnabled']   as boolean | undefined;
+
+  // ── Update state ────────────────────────────────────────────────────────────
+  if (zoneMode !== undefined && ([4, 6, 8] as number[]).includes(zoneMode))
+    state.advanced.sectorCount = zoneMode as SectorCount;
+  if (brightness      !== undefined) state.advanced.brightness           = brightness;
+  if (redThreshold    !== undefined) state.advanced.thresholds.redMax    = redThreshold;
+  if (yellowThreshold !== undefined) state.advanced.thresholds.yellowMax = yellowThreshold;
+  if (activeSectors   !== undefined) {
+    getSectorLabels(state.advanced.sectorCount).forEach((s, i) => {
+      state.advanced.activeSectors[s] = activeSectors[i] ?? true;
+    });
+  }
+  if (audioEn  !== undefined) state.audioEnabled  = audioEn;
+  if (visualEn !== undefined) state.visualEnabled = visualEn;
+
+  // ── Sync DOM ─────────────────────────────────────────────────────────────────
+  // Brightness
+  const brightSlider = document.getElementById('brightness-slider') as HTMLInputElement | null;
+  const brightVal    = document.getElementById('brightness-value');
+  if (brightSlider && brightness !== undefined) brightSlider.value = String(brightness);
+  if (brightVal    && brightness !== undefined) brightVal.textContent = `${brightness}%`;
+
+  // Thresholds
+  const redSlider      = document.getElementById('threshold-red')    as HTMLInputElement | null;
+  const redValEl       = document.getElementById('red-threshold-val');
+  const yellowSlider   = document.getElementById('threshold-yellow') as HTMLInputElement | null;
+  const yellowValEl    = document.getElementById('yellow-threshold-val');
+  const greenStartsEl  = document.getElementById('green-starts-val');
+  if (redSlider   && redThreshold    !== undefined) redSlider.value   = String(redThreshold);
+  if (redValEl    && redThreshold    !== undefined) redValEl.textContent = String(redThreshold);
+  if (yellowSlider && yellowThreshold !== undefined) yellowSlider.value = String(yellowThreshold);
+  if (yellowValEl  && yellowThreshold !== undefined) yellowValEl.textContent = String(yellowThreshold);
+  if (greenStartsEl && yellowThreshold !== undefined) greenStartsEl.textContent = String(yellowThreshold);
+
+  // Sector count buttons + toggles (re-render if zone or sector state changed)
+  if (zoneMode !== undefined || activeSectors !== undefined) {
+    document.querySelectorAll<HTMLButtonElement>('.sector-count-btn').forEach(btn => {
+      btn.classList.toggle('active', Number(btn.dataset['count']) === state.advanced.sectorCount);
+    });
+    const container = document.getElementById('sector-toggles-container');
+    if (container) { container.innerHTML = renderSectorToggles(); initSectorToggles(); }
+  }
+
+  // Audio enable button + cards
+  const audioEnableBtn = document.getElementById('audio-enable-btn') as HTMLButtonElement | null;
+  const audioModeCards = document.getElementById('audio-mode-cards');
+  if (audioEnableBtn) {
+    audioEnableBtn.classList.toggle('active', state.audioEnabled);
+    audioEnableBtn.textContent = state.audioEnabled ? 'Enabled' : 'Disabled';
+  }
+  audioModeCards?.classList.toggle('section-disabled', !state.audioEnabled);
+
+  // Visual enable button + cards
+  const visualEnableBtn = document.getElementById('visual-enable-btn') as HTMLButtonElement | null;
+  const visualModeCards = document.getElementById('visual-mode-cards');
+  if (visualEnableBtn) {
+    visualEnableBtn.classList.toggle('active', state.visualEnabled);
+    visualEnableBtn.textContent = state.visualEnabled ? 'Enabled' : 'Disabled';
+  }
+  visualModeCards?.classList.toggle('section-disabled', !state.visualEnabled);
+
+  refreshPreview();
 }
 
 // ─── Render ───────────────────────────────────────────────────────────────────
@@ -157,10 +238,17 @@ export function renderFeedbackConfig(): string {
 
       <!-- Audio feedback mode -->
       <section class="config-section">
-        <h2 class="section-title">Audio Feedback Mode</h2>
-        <p class="section-subtitle">Select how audio communicates obstacle proximity.</p>
+        <div class="section-header">
+          <div>
+            <h2 class="section-title">Audio Feedback Mode</h2>
+            <p class="section-subtitle">Select how audio communicates obstacle proximity.</p>
+          </div>
+          <button class="enable-btn${state.audioEnabled ? ' active' : ''}" id="audio-enable-btn">
+            ${state.audioEnabled ? 'Enabled' : 'Disabled'}
+          </button>
+        </div>
 
-        <div class="mode-cards">
+        <div class="mode-cards${!state.audioEnabled ? ' section-disabled' : ''}" id="audio-mode-cards">
 
           <div class="mode-card${state.selectedAudioMode === 'tonal' ? ' selected' : ''}" data-audio-mode="tonal">
             <div class="mode-diagram">${tonalSVG}</div>
@@ -182,10 +270,17 @@ export function renderFeedbackConfig(): string {
 
       <!-- Visual feedback mode -->
       <section class="config-section">
-        <h2 class="section-title">Visual Feedback Mode</h2>
-        <p class="section-subtitle">Select how the LED ring communicates obstacle proximity.</p>
+        <div class="section-header">
+          <div>
+            <h2 class="section-title">Visual Feedback Mode</h2>
+            <p class="section-subtitle">Select how the LED ring communicates obstacle proximity.</p>
+          </div>
+          <button class="enable-btn${state.visualEnabled ? ' active' : ''}" id="visual-enable-btn">
+            ${state.visualEnabled ? 'Enabled' : 'Disabled'}
+          </button>
+        </div>
 
-        <div class="mode-cards">
+        <div class="mode-cards${!state.visualEnabled ? ' section-disabled' : ''}" id="visual-mode-cards">
 
           <div class="mode-card${state.selectedMode === 'sector' ? ' selected' : ''}" data-mode="sector">
             <div class="mode-diagram">${sectorSVG}</div>
@@ -296,6 +391,28 @@ function initSectorToggles(): void {
 export function initFeedbackConfig(): void {
   state = defaultState();
 
+  // Audio enable toggle
+  const audioEnableBtn = document.getElementById('audio-enable-btn') as HTMLButtonElement | null;
+  const audioModeCards = document.getElementById('audio-mode-cards');
+  audioEnableBtn?.addEventListener('click', () => {
+    state.audioEnabled = !state.audioEnabled;
+    audioEnableBtn.classList.toggle('active', state.audioEnabled);
+    audioEnableBtn.textContent = state.audioEnabled ? 'Enabled' : 'Disabled';
+    audioModeCards?.classList.toggle('section-disabled', !state.audioEnabled);
+    sendConfig();
+  });
+
+  // Visual enable toggle
+  const visualEnableBtn = document.getElementById('visual-enable-btn') as HTMLButtonElement | null;
+  const visualModeCards = document.getElementById('visual-mode-cards');
+  visualEnableBtn?.addEventListener('click', () => {
+    state.visualEnabled = !state.visualEnabled;
+    visualEnableBtn.classList.toggle('active', state.visualEnabled);
+    visualEnableBtn.textContent = state.visualEnabled ? 'Enabled' : 'Disabled';
+    visualModeCards?.classList.toggle('section-disabled', !state.visualEnabled);
+    sendConfig();
+  });
+
   // Visual mode card selection
   document.querySelectorAll<HTMLElement>('.mode-card[data-mode]').forEach(card => {
     card.addEventListener('click', () => {
@@ -318,8 +435,17 @@ export function initFeedbackConfig(): void {
 
   // Display button — toggle preview on the physical LED ring
   previewActive = false;
-  // Sync settings to device on page load so obstacle detection uses current config
-  sendConfig();
+
+  // Restore UI state from ESP32 — remove any stale handler from a previous visit,
+  // register a new one, then ask the device for its current config.
+  if (configStatusHandler) offMessage(configStatusHandler);
+  configStatusHandler = (raw: unknown) => {
+    const msg = raw as Record<string, unknown>;
+    if (msg['type'] !== 'status') return;
+    applyStatus(msg);
+  };
+  onMessage(configStatusHandler);
+  sendMessage({ type: 'getConfig' });
   const displayBtn = document.getElementById('display-toggle') as HTMLButtonElement | null;
   displayBtn?.addEventListener('click', () => {
     previewActive = !previewActive;

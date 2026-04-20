@@ -8,7 +8,7 @@
  *
  * Hardware:
  *   - ESP32 DoIT DevKit V1
- *   - 94-LED NeoPixel ring on GPIO 18
+ *   - 93-LED NeoPixel ring on GPIO 18
  *   - MAX98357A I2S amp: BCK=27, WS=26, DO=25
  *
  * Audio:
@@ -44,8 +44,8 @@
 #include <math.h>
 
 // ── Pin & hardware config ─────────────────────────────────────────────────────
-#define LED_PIN   18
-#define NUM_LEDS  94
+#define LED_PIN   5
+#define NUM_LEDS  93
 
 #define I2S_BCK_IO  27
 #define I2S_WS_IO   26
@@ -59,18 +59,21 @@ const char* WIFI_PASS = "ViviSense123";
 // ── Runtime state ─────────────────────────────────────────────────────────────
 Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
-int currentBrightness = 191;  // 0–255 (maps from 0–100%)
+int currentBrightness = 64;   // 0–64  (maps from 0–100% slider, capped at 25% of LED max)
 int currentZoneMode   = 6;    // 4, 6, or 8
 int currentVolume     = 255;  // 0–255
 
 // ── Preview state (Display button on UI) ──────────────────────────────────────
 bool  previewMode           = false;
 int   previewZoneMode       = 6;
-int   previewBrightness     = 191;
+int   previewBrightness     = 64;
 float previewRedMm          = 600.0f;
 float previewYellowMm       = 1500.0f;
 bool  previewActiveSectors[8]  = {true,true,true,true,true,true,false,false};
 bool  currentActiveSectors[8] = {true,true,true,true,true,true,true,true};
+
+bool audioEnabled  = true;   // play audio during obstacle detection
+bool visualEnabled = true;   // light LEDs during obstacle detection
 
 // Distance thresholds in mm.
 // Defaults match the UI's default cm values × 10.
@@ -87,102 +90,102 @@ AsyncWebSocket wsServer("/ws");
 // =========================================================
 // RING 1 (1 LED, center — no zones)
 // =========================================================
-int ring1_any[] = {93, -1};
+int ring1_any[] = {92, -1};
 
 // =========================================================
 // 6-ZONE ARRAYS  (AHEAD / TOP_RIGHT / BOTTOM_RIGHT /
 //                 BEHIND / BOTTOM_LEFT / TOP_LEFT)
 // =========================================================
-int r2_6_AHEAD[]        = {85, -1};
-int r2_6_TOP_RIGHT[]    = {86, -1};
-int r2_6_BOTTOM_RIGHT[] = {87, 88, -1};
-int r2_6_BEHIND[]       = {89, -1};
-int r2_6_BOTTOM_LEFT[]  = {90, 91, -1};
-int r2_6_TOP_LEFT[]     = {92, -1};
+int r2_6_AHEAD[]        = {84, -1};
+int r2_6_TOP_RIGHT[]    = {85, -1};
+int r2_6_BOTTOM_RIGHT[] = {86, 87, -1};
+int r2_6_BEHIND[]       = {88, -1};
+int r2_6_BOTTOM_LEFT[]  = {89, 90, -1};
+int r2_6_TOP_LEFT[]     = {91, -1};
 
-int r3_6_AHEAD[]        = {73, -1};
-int r3_6_TOP_RIGHT[]    = {74, 75, -1};
-int r3_6_BOTTOM_RIGHT[] = {76, 77, 78, -1};
-int r3_6_BEHIND[]       = {79, -1};
-int r3_6_BOTTOM_LEFT[]  = {80, 81, -1};
-int r3_6_TOP_LEFT[]     = {82, 83, 84, -1};
+int r3_6_AHEAD[]        = {72, -1};
+int r3_6_TOP_RIGHT[]    = {73, 74, -1};
+int r3_6_BOTTOM_RIGHT[] = {75, 76, 77, -1};
+int r3_6_BEHIND[]       = {78, -1};
+int r3_6_BOTTOM_LEFT[]  = {79, 80, -1};
+int r3_6_TOP_LEFT[]     = {81, 82, 83, -1};
 
-int r4_6_AHEAD[]        = {57, 58, 72, -1};
-int r4_6_TOP_RIGHT[]    = {59, 60, -1};
-int r4_6_BOTTOM_RIGHT[] = {61, 62, 63, -1};
-int r4_6_BEHIND[]       = {64, 65, 66, -1};
-int r4_6_BOTTOM_LEFT[]  = {67, 68, -1};
-int r4_6_TOP_LEFT[]     = {69, 70, 71, -1};
+int r4_6_AHEAD[]        = {56, 57, 71, -1};
+int r4_6_TOP_RIGHT[]    = {58, 59, -1};
+int r4_6_BOTTOM_RIGHT[] = {60, 61, 62, -1};
+int r4_6_BEHIND[]       = {63, 64, 65, -1};
+int r4_6_BOTTOM_LEFT[]  = {66, 67, -1};
+int r4_6_TOP_LEFT[]     = {68, 69, 70, -1};
 
-int r5_6_AHEAD[]        = {33, 34, 56, -1};
-int r5_6_TOP_RIGHT[]    = {35, 36, 37, 38, -1};
-int r5_6_BOTTOM_RIGHT[] = {39, 40, 41, 42, -1};
-int r5_6_BEHIND[]       = {43, 44, 45, -1};
-int r5_6_BOTTOM_LEFT[]  = {46, 47, 48, 49, -1};
-int r5_6_TOP_LEFT[]     = {50, 51, 52, 53, 54, 55, -1};
+int r5_6_AHEAD[]        = {32, 33, 55, -1};
+int r5_6_TOP_RIGHT[]    = {34, 35, 36, 37, -1};
+int r5_6_BOTTOM_RIGHT[] = {38, 39, 40, 41, -1};
+int r5_6_BEHIND[]       = {42, 43, 44, -1};
+int r5_6_BOTTOM_LEFT[]  = {45, 46, 47, 48, -1};
+int r5_6_TOP_LEFT[]     = {49, 50, 51, 52, 53, 54, -1};
 
-int r6_6_AHEAD[]        = {30, 31, 32, 1, 2, -1};
-int r6_6_TOP_RIGHT[]    = {3, 4, 5, 6, 7, 8, -1};
-int r6_6_BOTTOM_RIGHT[] = {9, 10, 11, 12, 13, -1};
-int r6_6_BEHIND[]       = {14, 15, 16, 17, -1};
-int r6_6_BOTTOM_LEFT[]  = {18, 19, 20, 21, 22, 23, -1};
-int r6_6_TOP_LEFT[]     = {24, 25, 26, 27, 28, 29, -1};
+int r6_6_AHEAD[]        = {29, 30, 31, 0, 1, -1};
+int r6_6_TOP_RIGHT[]    = {2, 3, 4, 5, 6, 7, -1};
+int r6_6_BOTTOM_RIGHT[] = {8, 9, 10, 11, 12, -1};
+int r6_6_BEHIND[]       = {13, 14, 15, 16, -1};
+int r6_6_BOTTOM_LEFT[]  = {17, 18, 19, 20, 21, 22, -1};
+int r6_6_TOP_LEFT[]     = {23, 24, 25, 26, 27, 28, -1};
 
 // =========================================================
 // 4-ZONE ARRAYS  (N / E / S / W)
 // =========================================================
-int r2_4_N[] = {92, 85, -1};
-int r2_4_E[] = {86, 87, -1};
-int r2_4_S[] = {88, 89, -1};
-int r2_4_W[] = {90, 91, -1};
+int r2_4_N[] = {91, 84, -1};
+int r2_4_E[] = {85, 86, -1};
+int r2_4_S[] = {87, 88, -1};
+int r2_4_W[] = {89, 90, -1};
 
-int r3_4_N[] = {83, 84, 73, -1};
-int r3_4_E[] = {74, 76, 77, -1};
-int r3_4_S[] = {75, 78, 79, -1};
-int r3_4_W[] = {80, 81, 82, -1};
+int r3_4_N[] = {82, 83, 72, -1};
+int r3_4_E[] = {73, 75, 76, -1};
+int r3_4_S[] = {74, 77, 78, -1};
+int r3_4_W[] = {79, 80, 81, -1};
 
-int r4_4_N[] = {71, 72, 57, 58, -1};
-int r4_4_E[] = {59, 60, 61, 62, -1};
-int r4_4_S[] = {63, 64, 65, 66, -1};
-int r4_4_W[] = {67, 68, 69, 70, -1};
+int r4_4_N[] = {70, 71, 56, 57, -1};
+int r4_4_E[] = {58, 59, 60, 61, -1};
+int r4_4_S[] = {62, 63, 64, 65, -1};
+int r4_4_W[] = {66, 67, 68, 69, -1};
 
-int r5_4_N[] = {54, 55, 56, 33, 34, 35, -1};
-int r5_4_E[] = {36, 37, 38, 39, 40, 41, -1};
-int r5_4_S[] = {42, 43, 44, 45, 46, 47, -1};
-int r5_4_W[] = {48, 49, 50, 51, 52, 53, -1};
+int r5_4_N[] = {53, 54, 55, 32, 33, 34, -1};
+int r5_4_E[] = {35, 36, 37, 38, 39, 40, -1};
+int r5_4_S[] = {41, 42, 43, 44, 45, 46, -1};
+int r5_4_W[] = {47, 48, 49, 50, 51, 52, -1};
 
-int r6_4_N[] = {29, 30, 31, 32, 1, 2, 3, 4, -1};
-int r6_4_E[] = {5, 6, 7, 8, 9, 10, 11, 12, -1};
-int r6_4_S[] = {13, 14, 15, 16, 17, 18, 19, 20, -1};
-int r6_4_W[] = {21, 22, 23, 24, 25, 26, 27, 28, -1};
+int r6_4_N[] = {28, 29, 30, 31, 0, 1, 2, 3, -1};
+int r6_4_E[] = {4, 5, 6, 7, 8, 9, 10, 11, -1};
+int r6_4_S[] = {12, 13, 14, 15, 16, 17, 18, 19, -1};
+int r6_4_W[] = {20, 21, 22, 23, 24, 25, 26, 27, -1};
 
 // =========================================================
 // 8-ZONE ARRAYS  (N / NE / E / SE / S / SW / W / NW)
 // =========================================================
-int r2_8_N[]  = {92, -1};  int r2_8_NE[] = {85, -1};
-int r2_8_E[]  = {86, -1};  int r2_8_SE[] = {87, -1};
-int r2_8_S[]  = {88, -1};  int r2_8_SW[] = {89, -1};
-int r2_8_W[]  = {90, -1};  int r2_8_NW[] = {91, -1};
+int r2_8_N[]  = {91, -1};  int r2_8_NE[] = {84, -1};
+int r2_8_E[]  = {85, -1};  int r2_8_SE[] = {86, -1};
+int r2_8_S[]  = {87, -1};  int r2_8_SW[] = {88, -1};
+int r2_8_W[]  = {89, -1};  int r2_8_NW[] = {90, -1};
 
-int r3_8_N[]  = {84, 73, -1};  int r3_8_NE[] = {74, -1};
-int r3_8_E[]  = {75, 76, -1};  int r3_8_SE[] = {77, -1};
-int r3_8_S[]  = {78, 79, -1};  int r3_8_SW[] = {80, -1};
-int r3_8_W[]  = {81, 82, -1};  int r3_8_NW[] = {83, -1};
+int r3_8_N[]  = {83, 72, -1};  int r3_8_NE[] = {73, -1};
+int r3_8_E[]  = {74, 75, -1};  int r3_8_SE[] = {76, -1};
+int r3_8_S[]  = {77, 78, -1};  int r3_8_SW[] = {79, -1};
+int r3_8_W[]  = {80, 81, -1};  int r3_8_NW[] = {82, -1};
 
-int r4_8_N[]  = {72, 57, -1};  int r4_8_NE[] = {58, 59, -1};
-int r4_8_E[]  = {60, 61, -1};  int r4_8_SE[] = {62, 63, -1};
-int r4_8_S[]  = {64, 65, -1};  int r4_8_SW[] = {66, 67, -1};
-int r4_8_W[]  = {68, 69, -1};  int r4_8_NW[] = {70, 71, -1};
+int r4_8_N[]  = {71, 56, -1};  int r4_8_NE[] = {57, 58, -1};
+int r4_8_E[]  = {59, 60, -1};  int r4_8_SE[] = {61, 62, -1};
+int r4_8_S[]  = {63, 64, -1};  int r4_8_SW[] = {65, 66, -1};
+int r4_8_W[]  = {67, 68, -1};  int r4_8_NW[] = {69, 70, -1};
 
-int r5_8_N[]  = {55, 56, 33, -1};  int r5_8_NE[] = {34, 35, 36, -1};
-int r5_8_E[]  = {37, 38, 39, -1};  int r5_8_SE[] = {40, 41, 42, -1};
-int r5_8_S[]  = {43, 44, 45, -1};  int r5_8_SW[] = {46, 47, 48, -1};
-int r5_8_W[]  = {49, 50, 51, -1};  int r5_8_NW[] = {52, 53, 54, -1};
+int r5_8_N[]  = {54, 55, 32, -1};  int r5_8_NE[] = {33, 34, 35, -1};
+int r5_8_E[]  = {36, 37, 38, -1};  int r5_8_SE[] = {39, 40, 41, -1};
+int r5_8_S[]  = {42, 43, 44, -1};  int r5_8_SW[] = {45, 46, 47, -1};
+int r5_8_W[]  = {48, 49, 50, -1};  int r5_8_NW[] = {51, 52, 53, -1};
 
-int r6_8_N[]  = {31, 32, 1, 2, -1};    int r6_8_NE[] = {3, 4, 5, 6, -1};
-int r6_8_E[]  = {7, 8, 9, 10, -1};     int r6_8_SE[] = {11, 12, 13, 14, -1};
-int r6_8_S[]  = {15, 16, 17, 18, -1};  int r6_8_SW[] = {19, 20, 21, 22, -1};
-int r6_8_W[]  = {23, 24, 25, 26, -1};  int r6_8_NW[] = {27, 28, 29, 30, -1};
+int r6_8_N[]  = {30, 31, 0, 1, -1};    int r6_8_NE[] = {2, 3, 4, 5, -1};
+int r6_8_E[]  = {6, 7, 8, 9, -1};      int r6_8_SE[] = {10, 11, 12, 13, -1};
+int r6_8_S[]  = {14, 15, 16, 17, -1};  int r6_8_SW[] = {18, 19, 20, 21, -1};
+int r6_8_W[]  = {22, 23, 24, 25, -1};  int r6_8_NW[] = {26, 27, 28, 29, -1};
 
 // =========================================================
 // COLORS  — match the UI constants (RED=#ff2222, YELLOW=#ff8800, GREEN=#ffdd00)
@@ -430,6 +433,7 @@ int getZoneIndex(float angleDeg, int zoneMode) {
 
 void processCoordinates(float x, float y) {
   if (previewMode) return;  // hands are on the preview — ignore live obstacle data
+  if (!visualEnabled) return; // visual feedback disabled — don't touch the LEDs
   float distance = sqrt(x * x + y * y);
 
   if (distance > 3000.0f) {
@@ -538,6 +542,13 @@ void handleBackUp()    { Serial.println("Action: Back Up");  playAudio(back_up_d
 void handleSpeak()     { Serial.println("Action: Speak");    /* TODO: trigger voice input */ }
 
 // =========================================================
+// WEBSOCKET STATUS HELPER
+// =========================================================
+
+// Forward declaration — defined just before onWsEvent below.
+void sendStatus(AsyncWebSocketClient* client);
+
+// =========================================================
 // WEBSOCKET MESSAGE HANDLER
 // =========================================================
 
@@ -558,7 +569,7 @@ void handleWebSocketMessage(const char* msg) {
       if (mode == 4 || mode == 6 || mode == 8) currentZoneMode = mode;
     }
     if (!doc["brightness"].isNull()) {
-      currentBrightness = constrain((int)(doc["brightness"].as<float>() * 2.55f), 0, 255);
+      currentBrightness = constrain((int)(doc["brightness"].as<float>() * 0.64f), 0, 64);
     }
     if (!doc["redThreshold"].isNull() && !doc["yellowThreshold"].isNull()) {
       float redMm    = doc["redThreshold"].as<float>()    * 10.0f; // cm → mm
@@ -570,8 +581,17 @@ void handleWebSocketMessage(const char* msg) {
       int count = min((int)sectors.size(), 8);
       for (int i = 0; i < count; i++) currentActiveSectors[i] = sectors[i].as<bool>();
     }
-    Serial.printf("[Config] zoneMode=%d  brightness=%d%%\n",
-                  currentZoneMode, (int)(currentBrightness / 2.55f));
+    if (!doc["audioEnabled"].isNull()) {
+      audioEnabled = doc["audioEnabled"].as<bool>();
+    }
+    if (!doc["visualEnabled"].isNull()) {
+      bool newVis = doc["visualEnabled"].as<bool>();
+      if (visualEnabled && !newVis) { strip.clear(); strip.show(); } // clear immediately on disable
+      visualEnabled = newVis;
+    }
+    Serial.printf("[Config] zoneMode=%d  brightness=%d%%  audio=%s  visual=%s\n",
+                  currentZoneMode, (int)(currentBrightness / 0.64f),
+                  audioEnabled ? "on" : "off", visualEnabled ? "on" : "off");
 
   } else if (strcmp(type, "navigate") == 0) {
     const char* action = doc["action"] | "";
@@ -602,7 +622,7 @@ void handleWebSocketMessage(const char* msg) {
       if (mode == 4 || mode == 6 || mode == 8) previewZoneMode = mode;
 
       if (!doc["brightness"].isNull()) {
-        previewBrightness = constrain((int)(doc["brightness"].as<float>() * 2.55f), 0, 255);
+        previewBrightness = constrain((int)(doc["brightness"].as<float>() * 0.64f), 0, 64);
       }
       if (!doc["redThreshold"].isNull() && !doc["yellowThreshold"].isNull()) {
         float rMm = doc["redThreshold"].as<float>()    * 10.0f;
@@ -617,10 +637,34 @@ void handleWebSocketMessage(const char* msg) {
 
       lightPreview();
       Serial.printf("[Preview] zoneMode=%d  brightness=%d%%  red=%.0fmm  yellow=%.0fmm\n",
-                    previewZoneMode, (int)(previewBrightness / 2.55f),
+                    previewZoneMode, (int)(previewBrightness / 0.64f),
                     previewRedMm, previewYellowMm);
     }
+
+  } else if (strcmp(type, "getConfig") == 0) {
+    sendStatus(nullptr); // handled below — forward declaration keeps this clean
   }
+}
+
+// =========================================================
+// WEBSOCKET STATUS HELPER (definition)
+// =========================================================
+
+void sendStatus(AsyncWebSocketClient* client) {
+  JsonDocument doc;
+  doc["type"]           = "status";
+  doc["zoneMode"]       = currentZoneMode;
+  doc["brightness"]     = (int)(currentBrightness / 0.64f);
+  doc["redThreshold"]   = (int)(DIST_RING2 / 10.0f);
+  doc["yellowThreshold"]= (int)(DIST_RING4 / 10.0f);
+  doc["audioEnabled"]   = audioEnabled;
+  doc["visualEnabled"]  = visualEnabled;
+  JsonArray arr = doc["activeSectors"].to<JsonArray>();
+  for (int i = 0; i < currentZoneMode; i++) arr.add(currentActiveSectors[i]);
+  String out;
+  serializeJson(doc, out);
+  if (client) client->text(out);
+  else        wsServer.textAll(out);
 }
 
 // =========================================================
@@ -632,14 +676,7 @@ void onWsEvent(AsyncWebSocket* /*server*/, AsyncWebSocketClient* client,
   if (type == WS_EVT_CONNECT) {
     Serial.printf("[WS] Client #%u connected from %s\n",
                   client->id(), client->remoteIP().toString().c_str());
-    // Push current config to the new client
-    JsonDocument doc;
-    doc["type"]       = "status";
-    doc["zoneMode"]   = currentZoneMode;
-    doc["brightness"] = (int)(currentBrightness / 2.55f);
-    String out;
-    serializeJson(doc, out);
-    client->text(out);
+    sendStatus(client);
 
   } else if (type == WS_EVT_DISCONNECT) {
     Serial.printf("[WS] Client #%u disconnected\n", client->id());
@@ -664,7 +701,6 @@ void setup() {
   // LED ring
   strip.begin();
   strip.setBrightness(255); // per-LED scaling handled in lightUpZone
-  strip.setPixelColor(5,555);
   strip.show();
 
   // SPIFFS (serves the TypeScript UI)

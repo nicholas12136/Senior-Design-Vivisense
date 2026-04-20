@@ -448,6 +448,43 @@ input[type='range']::-moz-range-thumb {
   margin: 4px 0 20px;
 }
 
+/* Section header row (title/subtitle + enable button) */
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.section-header .section-subtitle { margin-bottom: 0; }
+
+/* Enable / Disable toggle button */
+.enable-btn {
+  flex-shrink: 0;
+  margin-top: 2px;
+  padding: 5px 14px;
+  border-radius: 20px;
+  border: 1.5px solid #dee2e6;
+  background: #f8f9fa;
+  color: #6c757d;
+  font-size: 12px;
+  font-weight: 600;
+  transition: all 0.2s;
+}
+.enable-btn.active {
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  border-color: #764ba2;
+  color: white;
+}
+.enable-btn:hover:not(.active) { border-color: #c5a8e8; color: #764ba2; }
+
+/* Disabled section — dim and block interaction */
+.mode-cards.section-disabled {
+  opacity: 0.35;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* Mode cards */
 .mode-cards {
   display: flex;
