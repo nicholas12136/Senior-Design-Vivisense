@@ -12,7 +12,7 @@
 // - Streams compact point CSV over Serial for a PC viewer
 
 const uint8_t ESPNOW_CHANNEL = 1;
-const uint32_t SERIAL_BAUD = 921600;
+const uint32_t SERIAL_BAUD = 115200;
 const uint8_t LATENCY_TEST_MODE = 0; // Set to 0 to disable clock-sync latency test mode.
 
 const int NUM_SENSORS = 8;

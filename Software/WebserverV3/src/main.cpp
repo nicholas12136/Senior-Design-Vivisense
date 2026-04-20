@@ -44,7 +44,7 @@
 #include <math.h>
 
 // ── Pin & hardware config ─────────────────────────────────────────────────────
-#define LED_PIN   18
+#define LED_PIN   5
 #define NUM_LEDS  94
 
 #define I2S_BCK_IO  27

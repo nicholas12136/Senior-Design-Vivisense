@@ -6,10 +6,10 @@
 #include <SparkFun_VL53L5CX_Library.h>
 
 // --- Pin & device configuration ------------------------------------------------
-constexpr uint8_t XSHUT_A = 18;
-constexpr uint8_t XSHUT_B = 19;
-constexpr uint8_t I2C_SDA = 21;
-constexpr uint8_t I2C_SCL = 22;
+constexpr uint8_t XSHUT_A = 1;
+constexpr uint8_t XSHUT_B = 10;
+constexpr uint8_t I2C_SDA = 0;
+constexpr uint8_t I2C_SCL = 1;
 
 constexpr uint8_t SENSOR_A_ID = 3; // 1,2 for left 3,4 for right
 constexpr uint8_t SENSOR_B_ID = 4;
