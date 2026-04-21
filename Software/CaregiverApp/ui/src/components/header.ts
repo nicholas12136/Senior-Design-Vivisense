@@ -9,31 +9,56 @@ const LOGO_SVG = `<svg viewBox="0 0 100 100">
 export function renderHeader(currentRoute: string): string {
   const isConfig = currentRoute === '#feedback-config';
   return `
-    <header class="header">
-      <div class="header-left">
-        <button class="menu-btn" id="menu-btn" aria-label="Open navigation" aria-expanded="false">
-          <span></span><span></span><span></span>
-        </button>
-        <nav class="nav-dropdown" id="nav-dropdown" aria-hidden="true">
-          <a href="#controller" class="nav-item${!isConfig ? ' active' : ''}">Controller</a>
-          <a href="#feedback-config" class="nav-item${isConfig ? ' active' : ''}">Feedback Config</a>
-        </nav>
-        <div class="logo-container">
-          <div class="logo-circle">${LOGO_SVG}</div>
-          <span class="app-name">ViviSense</span>
+    <div class="header-wrap">
+      <header class="header">
+        <div class="header-left">
+          <button class="menu-btn" id="menu-btn" aria-label="Open navigation" aria-expanded="false">
+            <span></span><span></span><span></span>
+          </button>
+          <nav class="nav-dropdown" id="nav-dropdown" aria-hidden="true">
+            <a href="#controller" class="nav-item${!isConfig ? ' active' : ''}">Controller</a>
+            <a href="#feedback-config" class="nav-item${isConfig ? ' active' : ''}">Feedback Config</a>
+          </nav>
+          <div class="logo-container">
+            <div class="logo-circle">${LOGO_SVG}</div>
+            <span class="app-name">ViviSense</span>
+          </div>
+        </div>
+        <div class="status-indicators">
+          <div class="battery-indicator">
+            <div class="battery-icon"><div class="battery-fill"></div></div>
+            <span>80%</span>
+          </div>
+          <div class="ws-status">
+            <div class="ws-dot" id="ws-dot"></div>
+            <span>Live</span>
+          </div>
+        </div>
+      </header>
+
+      <div class="component-status-bar">
+        <div class="component-status-chip state-unknown" id="comp-main">
+          <span class="component-dot"></span>
+          <span class="component-name">Main</span>
+          <span class="component-value">--</span>
+        </div>
+        <div class="component-status-chip state-unknown" id="comp-led">
+          <span class="component-dot"></span>
+          <span class="component-name">LED</span>
+          <span class="component-value">--</span>
+        </div>
+        <div class="component-status-chip state-unknown" id="comp-left-pod">
+          <span class="component-dot"></span>
+          <span class="component-name">Left Pod</span>
+          <span class="component-value">--</span>
+        </div>
+        <div class="component-status-chip state-unknown" id="comp-right-pod">
+          <span class="component-dot"></span>
+          <span class="component-name">Right Pod</span>
+          <span class="component-value">--</span>
         </div>
       </div>
-      <div class="status-indicators">
-        <div class="battery-indicator">
-          <div class="battery-icon"><div class="battery-fill"></div></div>
-          <span>80%</span>
-        </div>
-        <div class="ws-status">
-          <div class="ws-dot" id="ws-dot"></div>
-          <span>Live</span>
-        </div>
-      </div>
-    </header>`;
+    </div>`;
 }
 
 export function initHeader(): void {

@@ -29,8 +29,8 @@
  *                        "activeSectors":[true,true,true,true,true,true]}
  *   {"type":"preview",   "active":false}   → clears ring, resumes obstacle detection
  *
- * WebSocket protocol (ESP32 → browser):
- *   {"type":"status", "zoneMode":6, "brightness":80}
+ * WebSocket protocol (ESP32 -> browser):
+ *   {"type":"status", "zoneMode":6, "brightness":80, ...connectivity fields...}
  */
 
 #include <Arduino.h>
@@ -56,8 +56,12 @@ static uint8_t LED_ESP32_MAC[] = {0xE0, 0x8C, 0xFE, 0xB4, 0xE0, 0x6C};
 static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 // ── Beta: inter-ESP32 packet types ────────────────────────────────────────────
-const uint8_t MSG_CONFIG         = 0xB1;
-const uint8_t MSG_ZONE_PROXIMITY = 0xB3;
+const uint8_t MSG_CONFIG           = 0xB1;
+const uint8_t MSG_ZONE_PROXIMITY   = 0xB3;
+const uint8_t MSG_COMPONENT_STATUS = 0xB4;
+
+const uint8_t COMPONENT_MAIN_CONTROLLER = 1;
+const uint8_t COMPONENT_LED_CONTROLLER  = 2;
 
 struct __attribute__((packed)) ConfigPacket {
   uint8_t  msg_type;           // MSG_CONFIG
@@ -75,6 +79,13 @@ struct __attribute__((packed)) ZoneProximityPacket {
   uint8_t num_zones;
   float   closest_mm[8]; // 1e9 = no obstacle in zone
 };                        // 34 bytes
+
+struct __attribute__((packed)) ComponentStatusPacket {
+  uint8_t msg_type;
+  uint8_t component_id;
+  uint8_t sensor_seen_mask;
+  uint8_t flags;
+};                        // 4 bytes
 
 #define I2S_BCK_IO  27
 #define I2S_WS_IO   26
@@ -98,6 +109,12 @@ float previewRedMm          = 600.0f;
 float previewYellowMm       = 1500.0f;
 bool  previewActiveSectors[8]  = {true,true,true,true,true,true,false,false};
 bool  currentActiveSectors[8] = {true,true,true,true,true,true,true,true};
+uint8_t latestSensorSeenMask = 0;
+uint32_t lastMainControllerStatusMs = 0;
+uint32_t lastLedControllerStatusMs = 0;
+uint32_t lastWsStatusBroadcastMs = 0;
+const uint32_t COMPONENT_TIMEOUT_MS = 1500;
+const uint32_t WS_STATUS_PERIOD_MS = 500;
 
 bool audioEnabled  = true;   // play audio during obstacle detection
 bool visualEnabled = true;   // light LEDs during obstacle detection
@@ -285,12 +302,36 @@ void processZoneProximity(const ZoneProximityPacket &pkt)
 // ESP-NOW receive callback — handles ZoneProximityPackets from MainController.
 void onEspNowReceived(const uint8_t *mac, const uint8_t *data, int len)
 {
+  (void)mac;
+
+  if (len == (int)sizeof(ComponentStatusPacket))
+  {
+    const ComponentStatusPacket *pkt =
+        reinterpret_cast<const ComponentStatusPacket *>(data);
+    if (pkt->msg_type == MSG_COMPONENT_STATUS)
+    {
+      if (pkt->component_id == COMPONENT_MAIN_CONTROLLER)
+      {
+        latestSensorSeenMask = pkt->sensor_seen_mask;
+        lastMainControllerStatusMs = millis();
+      }
+      else if (pkt->component_id == COMPONENT_LED_CONTROLLER)
+      {
+        lastLedControllerStatusMs = millis();
+      }
+    }
+    return;
+  }
+
   if (len == (int)sizeof(ZoneProximityPacket))
   {
     const ZoneProximityPacket *pkt =
         reinterpret_cast<const ZoneProximityPacket *>(data);
     if (pkt->msg_type == MSG_ZONE_PROXIMITY)
-      processZoneProximity(*pkt);
+    {
+      lastMainControllerStatusMs = millis();
+    }
+    return;
   }
 }
 
@@ -361,6 +402,7 @@ void initEspNow() {
     return;
   }
   esp_now_register_send_cb(onEspNowSent);
+  esp_now_register_recv_cb(onEspNowReceived);
 
   // Live proximity rendering now runs on LEDRingController directly.
   // This unit only transmits ConfigPacket + preview LedFrame_t.
@@ -808,6 +850,31 @@ void handleWebSocketMessage(const char* msg) {
 // =========================================================
 
 void sendStatus(AsyncWebSocketClient* client) {
+  uint32_t nowMs = millis();
+  bool mainControllerConnected =
+      (lastMainControllerStatusMs != 0) &&
+      ((nowMs - lastMainControllerStatusMs) <= COMPONENT_TIMEOUT_MS);
+  bool ledControllerConnected =
+      (lastLedControllerStatusMs != 0) &&
+      ((nowMs - lastLedControllerStatusMs) <= COMPONENT_TIMEOUT_MS);
+
+  uint8_t sensorMask = mainControllerConnected ? latestSensorSeenMask : 0;
+  int leftPodOnlineSensors = 0;
+  int rightPodOnlineSensors = 0;
+  for (int i = 0; i < 4; i++) {
+    if ((sensorMask >> i) & 0x01) leftPodOnlineSensors++;
+  }
+  for (int i = 4; i < 8; i++) {
+    if ((sensorMask >> i) & 0x01) rightPodOnlineSensors++;
+  }
+
+  const char* leftPodState = (leftPodOnlineSensors == 4) ? "online"
+                           : (leftPodOnlineSensors == 0) ? "offline"
+                           : "degraded";
+  const char* rightPodState = (rightPodOnlineSensors == 4) ? "online"
+                            : (rightPodOnlineSensors == 0) ? "offline"
+                            : "degraded";
+
   JsonDocument doc;
   doc["type"]           = "status";
   doc["zoneMode"]       = currentZoneMode;
@@ -816,8 +883,22 @@ void sendStatus(AsyncWebSocketClient* client) {
   doc["yellowThreshold"]= (int)(DIST_RING4 / 10.0f);
   doc["audioEnabled"]   = audioEnabled;
   doc["visualEnabled"]  = visualEnabled;
+  doc["mainControllerConnected"] = mainControllerConnected;
+  doc["ledControllerConnected"] = ledControllerConnected;
+  doc["leftPodState"] = leftPodState;
+  doc["rightPodState"] = rightPodState;
+  doc["leftPodOnlineSensors"] = leftPodOnlineSensors;
+  doc["rightPodOnlineSensors"] = rightPodOnlineSensors;
+  doc["sensorSeenMask"] = sensorMask;
+  doc["mainControllerAgeMs"] =
+      mainControllerConnected ? (int)(nowMs - lastMainControllerStatusMs) : -1;
+  doc["ledControllerAgeMs"] =
+      ledControllerConnected ? (int)(nowMs - lastLedControllerStatusMs) : -1;
+
   JsonArray arr = doc["activeSectors"].to<JsonArray>();
   for (int i = 0; i < currentZoneMode; i++) arr.add(currentActiveSectors[i]);
+  JsonArray sensors = doc["sensorOnline"].to<JsonArray>();
+  for (int i = 0; i < 8; i++) sensors.add(((sensorMask >> i) & 0x01) != 0);
   String out;
   serializeJson(doc, out);
   if (client) client->text(out);
@@ -902,5 +983,11 @@ void setup() {
 void loop() {
   // Keep WebSocket connections clean
   wsServer.cleanupClients();
+
+  uint32_t nowMs = millis();
+  if ((nowMs - lastWsStatusBroadcastMs) >= WS_STATUS_PERIOD_MS) {
+    lastWsStatusBroadcastMs = nowMs;
+    sendStatus(nullptr);
+  }
 
 }

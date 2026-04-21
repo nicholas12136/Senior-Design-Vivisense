@@ -26,6 +26,10 @@
 
 const uint8_t MSG_CONFIG = 0xB1;
 const uint8_t MSG_ZONE_PROXIMITY = 0xB3;
+const uint8_t MSG_COMPONENT_STATUS = 0xB4;
+
+const uint8_t COMPONENT_LED_CONTROLLER = 2;
+static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 struct __attribute__((packed)) ConfigPacket {
   uint8_t  msg_type;
@@ -44,12 +48,21 @@ struct __attribute__((packed)) ZoneProximityPacket {
   float   closest_mm[8];
 };
 
+struct __attribute__((packed)) ComponentStatusPacket {
+  uint8_t msg_type;
+  uint8_t component_id;
+  uint8_t sensor_seen_mask;
+  uint8_t flags;
+};
+
 Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 int currentBrightness = 64;
 int currentZoneMode = 6;
 bool visualEnabled = true;
 bool currentActiveSectors[8] = {true, true, true, true, true, true, true, true};
+uint32_t lastHeartbeatMs = 0;
+const uint32_t HEARTBEAT_PERIOD_MS = 1000;
 
 float DIST_RING1 = 300.0f;
 float DIST_RING2 = 600.0f;
@@ -413,6 +426,15 @@ void onEspNowReceived(const uint8_t* mac, const uint8_t* data, int len) {
   Serial.printf("[ESP-NOW] Ignored packet size=%d\n", len);
 }
 
+static void sendHeartbeat() {
+  ComponentStatusPacket pkt = {};
+  pkt.msg_type = MSG_COMPONENT_STATUS;
+  pkt.component_id = COMPONENT_LED_CONTROLLER;
+  pkt.sensor_seen_mask = 0;
+  pkt.flags = visualEnabled ? 0x01 : 0x00;
+  esp_now_send(BROADCAST_MAC, reinterpret_cast<const uint8_t*>(&pkt), sizeof(pkt));
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -433,9 +455,25 @@ void setup() {
   }
 
   esp_now_register_recv_cb(onEspNowReceived);
+
+  {
+    esp_now_peer_info_t broadcastPeer = {};
+    memcpy(broadcastPeer.peer_addr, BROADCAST_MAC, 6);
+    broadcastPeer.channel = ESPNOW_CHANNEL;
+    broadcastPeer.ifidx = WIFI_IF_STA;
+    broadcastPeer.encrypt = false;
+    if (esp_now_add_peer(&broadcastPeer) != ESP_OK) {
+      Serial.println("[ESP-NOW] Broadcast peer FAILED");
+    }
+  }
+
   Serial.println("[ESP-NOW] Ready - waiting for zone/config/preview packets");
 }
 
 void loop() {
-  // ESP-NOW callback-driven.
+  uint32_t nowMs = millis();
+  if ((nowMs - lastHeartbeatMs) >= HEARTBEAT_PERIOD_MS) {
+    lastHeartbeatMs = nowMs;
+    sendHeartbeat();
+  }
 }

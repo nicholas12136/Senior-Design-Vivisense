@@ -52,8 +52,11 @@ struct SensorPacket
 
 // ── Beta: inter-ESP32 packets ─────────────────────────────────────────────────
 
-const uint8_t MSG_CONFIG         = 0xB1; // CaregiverApp -> MainController (+ LEDRingController)
-const uint8_t MSG_ZONE_PROXIMITY = 0xB3; // MainController -> LEDRingController (broadcast)
+const uint8_t MSG_CONFIG           = 0xB1; // CaregiverApp -> MainController (+ LEDRingController)
+const uint8_t MSG_ZONE_PROXIMITY   = 0xB3; // MainController -> LEDRingController (broadcast)
+const uint8_t MSG_COMPONENT_STATUS = 0xB4; // MainController -> CaregiverApp (broadcast)
+
+const uint8_t COMPONENT_MAIN_CONTROLLER = 1;
 
 // Sent by CaregiverApp when the caregiver changes settings in the browser UI.
 struct ConfigPacket
@@ -76,6 +79,14 @@ struct ZoneProximityPacket
   uint8_t num_zones;    // matches currentNumZones (4, 6, or 8)
   float   closest_mm[8]; // index = zone index; 1e9 means no obstacle in range
 } __attribute__((packed)); // 34 bytes
+
+struct ComponentStatusPacket
+{
+  uint8_t msg_type;          // MSG_COMPONENT_STATUS
+  uint8_t component_id;      // COMPONENT_MAIN_CONTROLLER
+  uint8_t sensor_seen_mask;  // bit N = sensor (N+1) is currently alive
+  uint8_t flags;             // bit0 = proximityVisualEnabled
+} __attribute__((packed));   // 4 bytes
 
 static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
@@ -141,6 +152,7 @@ void accumulateGridHits(uint8_t hitMask[OCC_GRID_CELL_COUNT]);
 void updateOccupancyGrid(const uint8_t hitMask[OCC_GRID_CELL_COUNT]);
 void computeZoneProximityFromGrid(float closestMmByZone[8]);
 void computeZoneProximityDirect(float closestMmByZone[8]);
+void broadcastComponentStatus();
 
 int findSensorIndex(uint8_t id)
 {
@@ -259,6 +271,28 @@ void emitReceiverStatusIfDue()
     Serial.print(",");
     Serial.println(convertUsAvgBySensor[i], 1);
   }
+
+  if (broadcastPeerAdded)
+  {
+    broadcastComponentStatus();
+  }
+}
+
+void broadcastComponentStatus()
+{
+  ComponentStatusPacket pkt = {};
+  pkt.msg_type = MSG_COMPONENT_STATUS;
+  pkt.component_id = COMPONENT_MAIN_CONTROLLER;
+  pkt.flags = proximityVisualEnabled ? 0x01 : 0x00;
+
+  uint8_t seenMask = 0;
+  for (int i = 0; i < NUM_SENSORS; i++)
+  {
+    if (sensorSeen[i]) seenMask |= (uint8_t)(1 << i);
+  }
+  pkt.sensor_seen_mask = seenMask;
+
+  esp_now_send(BROADCAST_MAC, (uint8_t *)&pkt, sizeof(pkt));
 }
 
 void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)

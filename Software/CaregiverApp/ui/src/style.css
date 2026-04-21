@@ -39,6 +39,12 @@ button { cursor: pointer; font-family: inherit; }
   flex-shrink: 0;
 }
 
+.header-wrap {
+  position: sticky;
+  top: 0;
+  z-index: 120;
+}
+
 .header-left {
   display: flex;
   align-items: center;
@@ -178,6 +184,62 @@ button { cursor: pointer; font-family: inherit; }
   background: #ef4444;
 }
 .ws-dot.connected { background: #4ade80; }
+
+.component-status-bar {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 8px 10px 10px;
+  background: #f5f6fb;
+  border-bottom: 1px solid #e5e7f2;
+}
+
+.component-status-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid #d9dce8;
+  font-size: 11px;
+  font-weight: 600;
+  color: #4b5563;
+}
+
+.component-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #9ca3af;
+  flex-shrink: 0;
+}
+
+.component-name {
+  white-space: nowrap;
+}
+
+.component-value {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.component-status-chip.state-online .component-dot {
+  background: #22c55e;
+}
+
+.component-status-chip.state-degraded .component-dot {
+  background: #f59e0b;
+}
+
+.component-status-chip.state-offline .component-dot {
+  background: #ef4444;
+}
+
+.component-status-chip.state-unknown .component-dot {
+  background: #9ca3af;
+}
 
 /* ─── Controller Page ──────────────────────────────────────────────────────── */
 .main-content {

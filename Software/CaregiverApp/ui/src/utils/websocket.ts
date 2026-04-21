@@ -1,18 +1,93 @@
-// WebSocket client — connects to the ESP32's server at ws://{host}/ws
+// WebSocket client - connects to the ESP32's server at ws://{host}/ws
 // The host resolves automatically whether served from the ESP32 or a dev server.
 
 type MessageHandler = (data: unknown) => void;
+type ComponentState = 'online' | 'degraded' | 'offline' | 'unknown';
+
+interface StatusMessage {
+  type: 'status';
+  mainControllerConnected?: boolean;
+  ledControllerConnected?: boolean;
+  leftPodState?: string;
+  rightPodState?: string;
+  leftPodOnlineSensors?: number;
+  rightPodOnlineSensors?: number;
+}
 
 const WS_PATH = '/ws';
 
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 const messageHandlers: MessageHandler[] = [];
+let lastStatusMessage: StatusMessage | null = null;
 
 function updateStatusDot(connected: boolean): void {
   const dot = document.getElementById('ws-dot');
   if (!dot) return;
   dot.classList.toggle('connected', connected);
+}
+
+function setComponentChip(id: string, state: ComponentState, value: string): void {
+  const chip = document.getElementById(id);
+  if (!chip) return;
+
+  chip.classList.remove('state-online', 'state-degraded', 'state-offline', 'state-unknown');
+  chip.classList.add(`state-${state}`);
+
+  const valueEl = chip.querySelector('.component-value');
+  if (valueEl) valueEl.textContent = value;
+}
+
+function parseComponentState(value: unknown): ComponentState {
+  if (value === 'online' || value === 'degraded' || value === 'offline' || value === 'unknown') {
+    return value;
+  }
+  return 'unknown';
+}
+
+function updateComponentStatusUI(status: StatusMessage | null): void {
+  if (!status) {
+    setComponentChip('comp-main', 'unknown', '--');
+    setComponentChip('comp-led', 'unknown', '--');
+    setComponentChip('comp-left-pod', 'unknown', '--');
+    setComponentChip('comp-right-pod', 'unknown', '--');
+    return;
+  }
+
+  const mainConnected = status.mainControllerConnected === true;
+  const ledConnected = status.ledControllerConnected === true;
+
+  const leftCount = Number.isFinite(status.leftPodOnlineSensors)
+    ? Number(status.leftPodOnlineSensors)
+    : null;
+  const rightCount = Number.isFinite(status.rightPodOnlineSensors)
+    ? Number(status.rightPodOnlineSensors)
+    : null;
+
+  const leftState = parseComponentState(status.leftPodState);
+  const rightState = parseComponentState(status.rightPodState);
+
+  setComponentChip('comp-main', mainConnected ? 'online' : 'offline', mainConnected ? 'Online' : 'Offline');
+  setComponentChip('comp-led', ledConnected ? 'online' : 'offline', ledConnected ? 'Online' : 'Offline');
+
+  if (leftCount !== null) {
+    setComponentChip('comp-left-pod', leftState, `${leftCount}/4`);
+  } else {
+    setComponentChip('comp-left-pod', leftState, '--');
+  }
+
+  if (rightCount !== null) {
+    setComponentChip('comp-right-pod', rightState, `${rightCount}/4`);
+  } else {
+    setComponentChip('comp-right-pod', rightState, '--');
+  }
+}
+
+function asStatusMessage(value: unknown): StatusMessage | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  if (record['type'] !== 'status') return null;
+  return record as unknown as StatusMessage;
 }
 
 function connect(): void {
@@ -21,13 +96,18 @@ function connect(): void {
 
   ws.onopen = () => {
     updateStatusDot(true);
-    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    updateComponentStatusUI(lastStatusMessage);
     console.log('[WS] Connected');
   };
 
   ws.onclose = () => {
     updateStatusDot(false);
-    console.log('[WS] Disconnected — retrying in 3 s');
+    updateComponentStatusUI(null);
+    console.log('[WS] Disconnected - retrying in 3 s');
     reconnectTimer = setTimeout(connect, 3000);
   };
 
@@ -38,6 +118,11 @@ function connect(): void {
   ws.onmessage = (event) => {
     try {
       const data: unknown = JSON.parse(event.data as string);
+      const status = asStatusMessage(data);
+      if (status) {
+        lastStatusMessage = status;
+        updateComponentStatusUI(lastStatusMessage);
+      }
       messageHandlers.forEach(h => h(data));
     } catch {
       // ignore malformed frames
@@ -47,8 +132,11 @@ function connect(): void {
 
 export function connectWebSocket(): void {
   if (!ws || ws.readyState === WebSocket.CLOSED) connect();
-  // Sync the dot to current WS state (the dot element may have been replaced by a navigation)
-  else updateStatusDot(ws.readyState === WebSocket.OPEN);
+  // Sync indicators to current state (DOM may have been replaced by route changes)
+  else {
+    updateStatusDot(ws.readyState === WebSocket.OPEN);
+    updateComponentStatusUI(lastStatusMessage);
+  }
 }
 
 export function sendMessage(msg: object): void {
@@ -56,7 +144,7 @@ export function sendMessage(msg: object): void {
     ws.send(JSON.stringify(msg));
     console.debug('[WS] sent:', JSON.stringify(msg).substring(0, 120));
   } else {
-    console.warn('[WS] message dropped — not connected:', JSON.stringify(msg).substring(0, 80));
+    console.warn('[WS] message dropped - not connected:', JSON.stringify(msg).substring(0, 80));
   }
 }
 
