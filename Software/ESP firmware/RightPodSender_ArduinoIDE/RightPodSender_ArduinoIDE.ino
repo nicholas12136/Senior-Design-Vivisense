@@ -6,7 +6,6 @@
 #include <SparkFun_VL53L5CX_Library.h>
 
 // --- Pin & device configuration ------------------------------------------------
-constexpr uint8_t XSHUT_A = 1;
 constexpr uint8_t XSHUT_B = 10;
 constexpr uint8_t I2C_SDA = 0;
 constexpr uint8_t I2C_SCL = 1;
@@ -134,11 +133,8 @@ bool addEspNowPeer(const uint8_t *mac)
 }
 
 // --- Sensor helpers ------------------------------------------------------------
-bool setupSensor(SparkFun_VL53L5CX &sensor, uint8_t xshutPin, uint8_t newAddr, const uint8_t freq, const int name)
+bool setupSensor(SparkFun_VL53L5CX &sensor, uint8_t newAddr, const uint8_t freq, const int name)
 {
-  digitalWrite(xshutPin, HIGH);
-  delay(50);
-
   if (!sensor.begin())
   {
     Serial.print(name);
@@ -222,9 +218,7 @@ void setup()
   Serial.begin(115200);
   Serial.println("Right Pod Serial Started");
 
-  pinMode(XSHUT_A, OUTPUT);
   pinMode(XSHUT_B, OUTPUT);
-  digitalWrite(XSHUT_A, LOW);
   digitalWrite(XSHUT_B, LOW);
   delay(100);
 
@@ -252,9 +246,14 @@ void setup()
   esp_now_register_recv_cb(onEspNowRecv);
   addEspNowPeer(baseMac);
 
-  // Bring up sensors one at a time, moving the first off the default address.
-  setupSensor(sensorA, XSHUT_A, ADDR_A, SENSOR_A_FREQ, SENSOR_A_ID);
-  setupSensor(sensorB, XSHUT_B, ADDR_B, SENSOR_B_FREQ, SENSOR_B_ID);
+  // Only XSHUT_B is controlled:
+  // 1) Hold B in reset so only A is visible at default I2C address.
+  // 2) Move A to ADDR_A.
+  // 3) Release B and move it to ADDR_B.
+  setupSensor(sensorA, ADDR_A, SENSOR_A_FREQ, SENSOR_A_ID);
+  digitalWrite(XSHUT_B, HIGH);
+  delay(50);
+  setupSensor(sensorB, ADDR_B, SENSOR_B_FREQ, SENSOR_B_ID);
   startTime = millis();
 }
 
