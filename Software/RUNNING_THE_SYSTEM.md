@@ -40,7 +40,7 @@ This writes assets into:
 ## 3. Flash LEDRingController First (to get MAC)
 
 ```powershell
-cd "c:\Users\damon\School\Fall 2025\Senior-Design-Vivisense\Software\LEDRingController"
+cd "c:\Users\damon\School\Fall 2025\Senior-Design-Vivisense\Software\ESP firmware\LEDRingController"
 pio run -t upload
 pio device monitor -b 115200
 ```
@@ -172,4 +172,3 @@ Use Feedback Config page to verify:
 - Audio missing:
   - Verify I2S wiring (BCK=27, WS=26, DO=25)
   - Confirm amp power and speaker wiring
-

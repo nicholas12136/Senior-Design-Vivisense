@@ -139,6 +139,7 @@ float wirelessUsAvgBySensor[NUM_SENSORS] = {0.0f};
 uint16_t dataSeqBySensor[NUM_SENSORS] = {0};
 uint32_t lastSyncSendMs = 0;
 const uint32_t SYNC_PERIOD_MS = 1000;
+const uint32_t SENSOR_STALE_TIMEOUT_MS = 400;
 
 // ── Beta: proximity detection state ──────────────────────────────────────────
 int     proximityNumZones       = 6;
@@ -147,6 +148,11 @@ bool    proximityVisualEnabled  = true;
 uint8_t proximityActiveSectors  = 0xFF; // all zones on by default
 // Ring distance thresholds (mm) — updated by ConfigPacket
 float proximityDistRings[5] = {300.0f, 600.0f, 1050.0f, 1500.0f, 1950.0f};
+float filteredClosestMmByZone[8] = {1e9f, 1e9f, 1e9f, 1e9f, 1e9f, 1e9f, 1e9f, 1e9f};
+uint8_t filteredValidByZone[8] = {0};
+uint8_t filteredMissCountByZone[8] = {0};
+const float PROXIMITY_DISTANCE_EMA_ALPHA = 0.35f;
+const uint8_t PROXIMITY_MISS_HOLD_FRAMES = 2; // hold ~130 ms at 15 Hz to reduce flicker.
 
 uint32_t lastProximityBroadcastMs = 0;
 const uint32_t PROXIMITY_PERIOD_MS = 67; // ~15 Hz
@@ -155,6 +161,7 @@ uint8_t  broadcastPeerAdded = 0;
 // Forward declarations for proximity helpers (defined before setup())
 void applyProximityThresholds(float redMaxMm, float yellowMaxMm);
 void broadcastZoneProximity();
+void invalidateStaleSensors();
 
 int findSensorIndex(uint8_t id)
 {
@@ -477,6 +484,22 @@ void maybeSendSyncRequests()
 
 // ── Beta: proximity helpers ───────────────────────────────────────────────────
 
+void invalidateStaleSensors()
+{
+  uint32_t nowMs = millis();
+  for (int i = 0; i < NUM_SENSORS; i++)
+  {
+    if (!sensorSeen[i]) continue;
+    uint32_t ageMs = nowMs - lastRxMsBySensor[i];
+    if (ageMs <= SENSOR_STALE_TIMEOUT_MS) continue;
+
+    sensorSeen[i] = 0;
+    sensorPendingProcess[i] = 0;
+    rxHzBySensor[i] = 0.0f;
+    Serial.printf("[Sensor] sid=%d marked stale after %lums\n", SENSOR_IDS[i], ageMs);
+  }
+}
+
 void applyProximityThresholds(float redMaxMm, float yellowMaxMm)
 {
   if (redMaxMm <= 0 || yellowMaxMm <= redMaxMm) return;
@@ -523,7 +546,8 @@ void broadcastZoneProximity()
   pkt.msg_type  = MSG_ZONE_PROXIMITY;
   pkt.num_zones = (uint8_t)proximityNumZones;
 
-  for (int z = 0; z < 8; z++) pkt.closest_mm[z] = 1e9f;
+  float rawClosestMmByZone[8];
+  for (int z = 0; z < 8; z++) rawClosestMmByZone[z] = 1e9f;
 
   // Accumulate closest valid world point per zone across all sensors
   for (int s = 0; s < NUM_SENSORS; s++)
@@ -543,7 +567,52 @@ void broadcastZoneProximity()
       int zone = proximityZoneIndex(angleDeg, proximityNumZones);
       if (!(proximityActiveSectors & (1 << zone))) continue;
 
-      if (dist < pkt.closest_mm[zone]) pkt.closest_mm[zone] = dist;
+      if (dist < rawClosestMmByZone[zone]) rawClosestMmByZone[zone] = dist;
+    }
+  }
+
+  for (int z = 0; z < 8; z++)
+  {
+    bool zoneEnabled = (z < proximityNumZones) && ((proximityActiveSectors & (1 << z)) != 0);
+    if (!zoneEnabled)
+    {
+      filteredValidByZone[z] = 0;
+      filteredMissCountByZone[z] = 0;
+      filteredClosestMmByZone[z] = 1e9f;
+      pkt.closest_mm[z] = 1e9f;
+      continue;
+    }
+
+    float rawDist = rawClosestMmByZone[z];
+    if (rawDist < 1e9f)
+    {
+      if (!filteredValidByZone[z])
+      {
+        filteredClosestMmByZone[z] = rawDist;
+      }
+      else
+      {
+        filteredClosestMmByZone[z] =
+            (1.0f - PROXIMITY_DISTANCE_EMA_ALPHA) * filteredClosestMmByZone[z] +
+            (PROXIMITY_DISTANCE_EMA_ALPHA * rawDist);
+      }
+      filteredValidByZone[z] = 1;
+      filteredMissCountByZone[z] = 0;
+      pkt.closest_mm[z] = filteredClosestMmByZone[z];
+      continue;
+    }
+
+    if (filteredValidByZone[z] && filteredMissCountByZone[z] < PROXIMITY_MISS_HOLD_FRAMES)
+    {
+      filteredMissCountByZone[z]++;
+      pkt.closest_mm[z] = filteredClosestMmByZone[z];
+    }
+    else
+    {
+      filteredValidByZone[z] = 0;
+      filteredMissCountByZone[z] = 0;
+      filteredClosestMmByZone[z] = 1e9f;
+      pkt.closest_mm[z] = 1e9f;
     }
   }
 
@@ -564,6 +633,8 @@ void setup()
   esp_wifi_set_promiscuous(true);
   esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
   esp_wifi_set_promiscuous(false);
+  Serial.printf("[ESP-NOW] MainController MAC address: %s\n", WiFi.macAddress().c_str());
+  Serial.printf("[ESP-NOW] Listening on channel %d\n", ESPNOW_CHANNEL);
 
   if (esp_now_init() != ESP_OK)
   {
@@ -592,6 +663,7 @@ void setup()
 
 void loop()
 {
+  invalidateStaleSensors();
   processPendingSensors();
   maybeSendSyncRequests();
   emitReceiverStatusIfDue();

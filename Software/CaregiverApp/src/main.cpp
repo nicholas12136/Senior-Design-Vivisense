@@ -311,7 +311,8 @@ void sendConfigToMainController(int overrideVisualEnabled = -1)
   cfg.active_sectors      = 0;
   for (int i = 0; i < currentZoneMode; i++)
     if (currentActiveSectors[i]) cfg.active_sectors |= (uint8_t)(1 << i);
-  esp_now_send(BROADCAST_MAC, (const uint8_t *)&cfg, sizeof(cfg));
+  esp_err_t err = esp_now_send(BROADCAST_MAC, (const uint8_t *)&cfg, sizeof(cfg));
+  if (err != ESP_OK) Serial.printf("[ESP-NOW] Config send error: 0x%x\n", err);
 }
 
 static uint8_t ringToColorCode(int ring) {
@@ -339,7 +340,19 @@ static void sendClearFrame() {
 }
 
 static void onEspNowSent(const uint8_t* mac, esp_now_send_status_t status) {
-  Serial.printf("[ESP-NOW] Send %s\n", status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAILED");
+  const char* target = "OTHER";
+  if (mac != nullptr) {
+    if (memcmp(mac, LED_ESP32_MAC, 6) == 0) target = "LED";
+    else if (memcmp(mac, BROADCAST_MAC, 6) == 0) target = "BROADCAST";
+    Serial.printf("[ESP-NOW] %s send %s (%02X:%02X:%02X:%02X:%02X:%02X)\n",
+                  target,
+                  status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAILED",
+                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  } else {
+    Serial.printf("[ESP-NOW] %s send %s\n",
+                  target,
+                  status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAILED");
+  }
 }
 
 void initEspNow() {

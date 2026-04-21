@@ -177,7 +177,7 @@ Threshold units in WebSocket messages are centimeters.
 | Firmware Project | Board |
 |---|---|
 | `Software/ESP firmware/MainController` | `esp32dev` |
-| `Software/LEDRingController` | `esp32doit-devkit-v1` |
+| `Software/ESP firmware/LEDRingController` | `esp32doit-devkit-v1` |
 | `Software/CaregiverApp` | `esp32doit-devkit-v1` |
 | `Software/ESP firmware/LeftPodSender` | `esp32dev` |
 | `Software/ESP firmware/RightPodSender` | `esp32dev` (or c3 env if needed) |
@@ -193,4 +193,3 @@ See `Software/RUNNING_THE_SYSTEM.md` for exact commands and flashing order.
 - Zone assignment is angle-only (no height filtering).
 - LED preview unicast uses a hardcoded LEDRingController MAC in CaregiverApp (`LED_ESP32_MAC`).
 - Audio clips are compiled into `Software/CaregiverApp/include/sounds.h`.
-
