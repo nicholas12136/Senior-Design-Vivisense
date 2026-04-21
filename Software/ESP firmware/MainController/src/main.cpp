@@ -55,8 +55,12 @@ struct SensorPacket
 const uint8_t MSG_CONFIG           = 0xB1; // CaregiverApp -> MainController (+ LEDRingController)
 const uint8_t MSG_ZONE_PROXIMITY   = 0xB3; // MainController -> LEDRingController (broadcast)
 const uint8_t MSG_COMPONENT_STATUS = 0xB4; // MainController -> CaregiverApp (broadcast)
+const uint8_t MSG_DETECTION_MODE   = 0xB5; // CaregiverApp -> MainController
 
 const uint8_t COMPONENT_MAIN_CONTROLLER = 1;
+const uint8_t DETECTION_MODE_DIRECT = 0;
+const uint8_t DETECTION_MODE_CARTESIAN_GRID = 1;
+const uint8_t DETECTION_MODE_POLAR_GRID = 2;
 
 // Sent by CaregiverApp when the caregiver changes settings in the browser UI.
 struct ConfigPacket
@@ -85,8 +89,14 @@ struct ComponentStatusPacket
   uint8_t msg_type;          // MSG_COMPONENT_STATUS
   uint8_t component_id;      // COMPONENT_MAIN_CONTROLLER
   uint8_t sensor_seen_mask;  // bit N = sensor (N+1) is currently alive
-  uint8_t flags;             // bit0 = proximityVisualEnabled
+  uint8_t flags;             // bit0=visualEnabled, bit1..2=detection mode
 } __attribute__((packed));   // 4 bytes
+
+struct DetectionModePacket
+{
+  uint8_t msg_type;          // MSG_DETECTION_MODE
+  uint8_t mode;              // 0=direct, 1=cartesian, 2=polar
+} __attribute__((packed));   // 2 bytes
 
 static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
@@ -110,7 +120,7 @@ bool    proximityVisualEnabled  = true;
 uint8_t proximityActiveSectors  = 0xFF; // all zones on by default
 // Ring distance thresholds (mm) — updated by ConfigPacket
 float proximityDistRings[5] = {300.0f, 600.0f, 1050.0f, 1500.0f, 1950.0f};
-const uint8_t USE_OCCUPANCY_GRID = 1;
+uint8_t proximityDetectionMode = DETECTION_MODE_POLAR_GRID;
 
 // Occupancy grid parameters (wheelchair/body frame, mm):
 // - X axis: forward, sampled over [OCC_X_MIN_MM, OCC_X_MAX_MM)
@@ -139,6 +149,16 @@ const uint8_t OCC_EXIT_THRESHOLD = 80;
 uint8_t occConfidence[OCC_GRID_CELL_COUNT] = {0};
 uint8_t occOccupied[OCC_GRID_CELL_COUNT] = {0};
 
+const int POLAR_NUM_RINGS = 6;
+const int POLAR_MAX_ZONES = 8;
+const int POLAR_BIN_COUNT = POLAR_NUM_RINGS * POLAR_MAX_ZONES; // 48
+const uint8_t POLAR_CONF_RISE = 90;
+const uint8_t POLAR_CONF_DECAY = 24;
+const uint8_t POLAR_ENTER_THRESHOLD = 120;
+const uint8_t POLAR_EXIT_THRESHOLD = 80;
+uint8_t polarConfidence[POLAR_BIN_COUNT] = {0};
+uint8_t polarOccupied[POLAR_BIN_COUNT] = {0};
+
 uint32_t lastProximityBroadcastMs = 0;
 const uint32_t PROXIMITY_PERIOD_MS = 67; // ~15 Hz
 uint8_t  broadcastPeerAdded = 0;
@@ -152,6 +172,14 @@ void accumulateGridHits(uint8_t hitMask[OCC_GRID_CELL_COUNT]);
 void updateOccupancyGrid(const uint8_t hitMask[OCC_GRID_CELL_COUNT]);
 void computeZoneProximityFromGrid(float closestMmByZone[8]);
 void computeZoneProximityDirect(float closestMmByZone[8]);
+void clearPolarGrid();
+void accumulatePolarHits(uint8_t hitMask[POLAR_BIN_COUNT]);
+void updatePolarGrid(const uint8_t hitMask[POLAR_BIN_COUNT]);
+void computeZoneProximityFromPolar(float closestMmByZone[8]);
+int proximityRingIndexFromDistance(float distMm);
+float proximityRepresentativeDistanceForRing(int ringIndex);
+void emitDetectionDebugFrame(const float closestMmByZone[8]);
+static int proximityZoneIndex(float angleDeg, int numZones);
 void broadcastComponentStatus();
 
 int findSensorIndex(uint8_t id)
@@ -283,7 +311,8 @@ void broadcastComponentStatus()
   ComponentStatusPacket pkt = {};
   pkt.msg_type = MSG_COMPONENT_STATUS;
   pkt.component_id = COMPONENT_MAIN_CONTROLLER;
-  pkt.flags = proximityVisualEnabled ? 0x01 : 0x00;
+  pkt.flags = (proximityVisualEnabled ? 0x01 : 0x00) |
+              ((proximityDetectionMode & 0x03) << 1);
 
   uint8_t seenMask = 0;
   for (int i = 0; i < NUM_SENSORS; i++)
@@ -298,6 +327,23 @@ void broadcastComponentStatus()
 void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
 {
   (void)mac;
+
+  if (len == (int)sizeof(DetectionModePacket))
+  {
+    DetectionModePacket modePkt;
+    memcpy(&modePkt, incomingData, sizeof(modePkt));
+    if (modePkt.msg_type == MSG_DETECTION_MODE)
+    {
+      if (modePkt.mode <= DETECTION_MODE_POLAR_GRID)
+      {
+        proximityDetectionMode = modePkt.mode;
+        clearOccupancyGrid();
+        clearPolarGrid();
+        Serial.printf("[Config] detection_mode=%d\n", (int)proximityDetectionMode);
+      }
+      return;
+    }
+  }
 
   // ConfigPacket from CaregiverApp — update local proximity settings
   if (len == (int)sizeof(ConfigPacket))
@@ -315,6 +361,7 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
       if (!proximityVisualEnabled)
       {
         clearOccupancyGrid();
+        clearPolarGrid();
       }
       Serial.printf("[Config] zones=%d bright=%d visual=%s sectors=0x%02X\n",
                     proximityNumZones, proximityBrightness,
@@ -394,6 +441,37 @@ void clearOccupancyGrid()
   }
 }
 
+void clearPolarGrid()
+{
+  for (int i = 0; i < POLAR_BIN_COUNT; i++)
+  {
+    polarConfidence[i] = 0;
+    polarOccupied[i] = 0;
+  }
+}
+
+static int polarBinIndex(int ringIndex, int zoneIndex)
+{
+  return (ringIndex * POLAR_MAX_ZONES) + zoneIndex;
+}
+
+int proximityRingIndexFromDistance(float distMm)
+{
+  if (distMm < proximityDistRings[0]) return 0;
+  if (distMm < proximityDistRings[1]) return 1;
+  if (distMm < proximityDistRings[2]) return 2;
+  if (distMm < proximityDistRings[3]) return 3;
+  if (distMm < proximityDistRings[4]) return 4;
+  return 5;
+}
+
+float proximityRepresentativeDistanceForRing(int ringIndex)
+{
+  float lower = (ringIndex <= 0) ? 0.0f : proximityDistRings[ringIndex - 1];
+  float upper = (ringIndex < 5) ? proximityDistRings[ringIndex] : 3000.0f;
+  return lower + ((upper - lower) * 0.5f);
+}
+
 void accumulateGridHits(uint8_t hitMask[OCC_GRID_CELL_COUNT])
 {
   for (int i = 0; i < OCC_GRID_CELL_COUNT; i++) hitMask[i] = 0;
@@ -433,6 +511,53 @@ void updateOccupancyGrid(const uint8_t hitMask[OCC_GRID_CELL_COUNT])
 
     if (!occOccupied[i] && conf >= OCC_ENTER_THRESHOLD) occOccupied[i] = 1;
     else if (occOccupied[i] && conf <= OCC_EXIT_THRESHOLD) occOccupied[i] = 0;
+  }
+}
+
+void accumulatePolarHits(uint8_t hitMask[POLAR_BIN_COUNT])
+{
+  for (int i = 0; i < POLAR_BIN_COUNT; i++) hitMask[i] = 0;
+
+  for (int s = 0; s < NUM_SENSORS; s++)
+  {
+    if (!sensorSeen[s]) continue;
+    for (int cell = 0; cell < 16; cell++)
+    {
+      const Point &p = sensors[s].latestWorldPoints[cell];
+      if (!p.isValid) continue;
+
+      float dist = sqrtf(p.worldX * p.worldX + p.worldY * p.worldY);
+      if (dist > 3000.0f) continue;
+
+      float angleDeg = atan2f(-p.worldY, p.worldX) * (180.0f / 3.14159265f);
+      int zone = proximityZoneIndex(angleDeg, proximityNumZones);
+      if (zone < 0 || zone >= proximityNumZones) continue;
+
+      int ring = proximityRingIndexFromDistance(dist);
+      int idx = polarBinIndex(ring, zone);
+      if (idx >= 0 && idx < POLAR_BIN_COUNT) hitMask[idx] = 1;
+    }
+  }
+}
+
+void updatePolarGrid(const uint8_t hitMask[POLAR_BIN_COUNT])
+{
+  for (int i = 0; i < POLAR_BIN_COUNT; i++)
+  {
+    uint8_t conf = polarConfidence[i];
+    if (hitMask[i])
+    {
+      uint16_t boosted = (uint16_t)conf + POLAR_CONF_RISE;
+      conf = (boosted > 255U) ? 255U : (uint8_t)boosted;
+    }
+    else
+    {
+      conf = (conf > POLAR_CONF_DECAY) ? (uint8_t)(conf - POLAR_CONF_DECAY) : 0;
+    }
+    polarConfidence[i] = conf;
+
+    if (!polarOccupied[i] && conf >= POLAR_ENTER_THRESHOLD) polarOccupied[i] = 1;
+    else if (polarOccupied[i] && conf <= POLAR_EXIT_THRESHOLD) polarOccupied[i] = 0;
   }
 }
 
@@ -526,6 +651,74 @@ void computeZoneProximityDirect(float closestMmByZone[8])
   }
 }
 
+void computeZoneProximityFromPolar(float closestMmByZone[8])
+{
+  for (int z = 0; z < 8; z++) closestMmByZone[z] = 1e9f;
+
+  for (int zone = 0; zone < proximityNumZones; zone++)
+  {
+    if (!(proximityActiveSectors & (1 << zone))) continue;
+    for (int ring = 0; ring < POLAR_NUM_RINGS; ring++)
+    {
+      int idx = polarBinIndex(ring, zone);
+      if (idx < 0 || idx >= POLAR_BIN_COUNT) continue;
+      if (!polarOccupied[idx]) continue;
+      closestMmByZone[zone] = proximityRepresentativeDistanceForRing(ring);
+      break;
+    }
+  }
+}
+
+void emitDetectionDebugFrame(const float closestMmByZone[8])
+{
+  Serial.print("DL,");
+  Serial.print((int)proximityDetectionMode);
+  Serial.print(",");
+  Serial.print((int)proximityNumZones);
+  Serial.print(",");
+  Serial.print((int)proximityActiveSectors);
+  for (int i = 0; i < 5; i++)
+  {
+    Serial.print(",");
+    Serial.print((int)proximityDistRings[i]);
+  }
+  for (int z = 0; z < 8; z++)
+  {
+    Serial.print(",");
+    if (closestMmByZone[z] >= 1e9f) Serial.print(-1);
+    else Serial.print((int)closestMmByZone[z]);
+  }
+  Serial.println();
+
+  if (proximityDetectionMode != DETECTION_MODE_POLAR_GRID) return;
+
+  Serial.print("DP,");
+  Serial.print((int)proximityNumZones);
+  for (int ring = 0; ring < POLAR_NUM_RINGS; ring++)
+  {
+    for (int zone = 0; zone < POLAR_MAX_ZONES; zone++)
+    {
+      int idx = polarBinIndex(ring, zone);
+      Serial.print(",");
+      Serial.print((int)polarConfidence[idx]);
+    }
+  }
+  Serial.println();
+
+  Serial.print("DO,");
+  Serial.print((int)proximityNumZones);
+  for (int ring = 0; ring < POLAR_NUM_RINGS; ring++)
+  {
+    for (int zone = 0; zone < POLAR_MAX_ZONES; zone++)
+    {
+      int idx = polarBinIndex(ring, zone);
+      Serial.print(",");
+      Serial.print((int)polarOccupied[idx]);
+    }
+  }
+  Serial.println();
+}
+
 void broadcastZoneProximity()
 {
   ZoneProximityPacket pkt;
@@ -533,7 +726,11 @@ void broadcastZoneProximity()
   pkt.num_zones = (uint8_t)proximityNumZones;
 
   float closestMmByZone[8];
-  if (USE_OCCUPANCY_GRID)
+  if (proximityDetectionMode == DETECTION_MODE_DIRECT)
+  {
+    computeZoneProximityDirect(closestMmByZone);
+  }
+  else if (proximityDetectionMode == DETECTION_MODE_CARTESIAN_GRID)
   {
     uint8_t hitMask[OCC_GRID_CELL_COUNT];
     accumulateGridHits(hitMask);
@@ -542,7 +739,10 @@ void broadcastZoneProximity()
   }
   else
   {
-    computeZoneProximityDirect(closestMmByZone);
+    uint8_t hitMask[POLAR_BIN_COUNT];
+    accumulatePolarHits(hitMask);
+    updatePolarGrid(hitMask);
+    computeZoneProximityFromPolar(closestMmByZone);
   }
 
   for (int z = 0; z < 8; z++)
@@ -551,6 +751,7 @@ void broadcastZoneProximity()
     pkt.closest_mm[z] = zoneEnabled ? closestMmByZone[z] : 1e9f;
   }
 
+  emitDetectionDebugFrame(closestMmByZone);
   esp_now_send(BROADCAST_MAC, (uint8_t *)&pkt, sizeof(pkt));
 }
 
@@ -576,6 +777,9 @@ void setup()
     Serial.println("ESP-NOW init failed");
     return;
   }
+
+  Serial.printf("[Config] detection_mode=%d (0=direct,1=cartesian,2=polar)\n",
+                (int)proximityDetectionMode);
 
   esp_now_register_recv_cb(OnDataRecv);
 

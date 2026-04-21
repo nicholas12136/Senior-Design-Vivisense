@@ -59,9 +59,13 @@ static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 const uint8_t MSG_CONFIG           = 0xB1;
 const uint8_t MSG_ZONE_PROXIMITY   = 0xB3;
 const uint8_t MSG_COMPONENT_STATUS = 0xB4;
+const uint8_t MSG_DETECTION_MODE   = 0xB5;
 
 const uint8_t COMPONENT_MAIN_CONTROLLER = 1;
 const uint8_t COMPONENT_LED_CONTROLLER  = 2;
+const uint8_t DETECTION_MODE_DIRECT = 0;
+const uint8_t DETECTION_MODE_CARTESIAN_GRID = 1;
+const uint8_t DETECTION_MODE_POLAR_GRID = 2;
 
 struct __attribute__((packed)) ConfigPacket {
   uint8_t  msg_type;           // MSG_CONFIG
@@ -84,8 +88,13 @@ struct __attribute__((packed)) ComponentStatusPacket {
   uint8_t msg_type;
   uint8_t component_id;
   uint8_t sensor_seen_mask;
-  uint8_t flags;
+  uint8_t flags; // bit0=visualEnabled, bit1..2=detection mode (main controller)
 };                        // 4 bytes
+
+struct __attribute__((packed)) DetectionModePacket {
+  uint8_t msg_type;
+  uint8_t mode; // 0=direct, 1=cartesian, 2=polar
+};                        // 2 bytes
 
 #define I2S_BCK_IO  27
 #define I2S_WS_IO   26
@@ -110,6 +119,8 @@ float previewYellowMm       = 1500.0f;
 bool  previewActiveSectors[8]  = {true,true,true,true,true,true,false,false};
 bool  currentActiveSectors[8] = {true,true,true,true,true,true,true,true};
 uint8_t latestSensorSeenMask = 0;
+uint8_t currentDetectionMode = DETECTION_MODE_POLAR_GRID;
+uint8_t lastMainDetectionMode = DETECTION_MODE_POLAR_GRID;
 uint32_t lastMainControllerStatusMs = 0;
 uint32_t lastLedControllerStatusMs = 0;
 uint32_t lastWsStatusBroadcastMs = 0;
@@ -313,6 +324,10 @@ void onEspNowReceived(const uint8_t *mac, const uint8_t *data, int len)
       if (pkt->component_id == COMPONENT_MAIN_CONTROLLER)
       {
         latestSensorSeenMask = pkt->sensor_seen_mask;
+        uint8_t modeFromMain = (uint8_t)((pkt->flags >> 1) & 0x03);
+        if (modeFromMain <= DETECTION_MODE_POLAR_GRID) {
+          lastMainDetectionMode = modeFromMain;
+        }
         lastMainControllerStatusMs = millis();
       }
       else if (pkt->component_id == COMPONENT_LED_CONTROLLER)
@@ -354,6 +369,15 @@ void sendConfigToMainController(int overrideVisualEnabled = -1)
     if (currentActiveSectors[i]) cfg.active_sectors |= (uint8_t)(1 << i);
   esp_err_t err = esp_now_send(BROADCAST_MAC, (const uint8_t *)&cfg, sizeof(cfg));
   if (err != ESP_OK) Serial.printf("[ESP-NOW] Config send error: 0x%x\n", err);
+}
+
+void sendDetectionModeToMainController()
+{
+  DetectionModePacket pkt = {};
+  pkt.msg_type = MSG_DETECTION_MODE;
+  pkt.mode = currentDetectionMode;
+  esp_err_t err = esp_now_send(BROADCAST_MAC, reinterpret_cast<const uint8_t*>(&pkt), sizeof(pkt));
+  if (err != ESP_OK) Serial.printf("[ESP-NOW] Detection mode send error: 0x%x\n", err);
 }
 
 static uint8_t ringToColorCode(int ring) {
@@ -784,12 +808,19 @@ void handleWebSocketMessage(const char* msg) {
       if (visualEnabled && !newVis) { sendClearFrame(); }
       visualEnabled = newVis;
     }
+    if (!doc["detectionMode"].isNull()) {
+      int mode = doc["detectionMode"].as<int>();
+      if (mode >= DETECTION_MODE_DIRECT && mode <= DETECTION_MODE_POLAR_GRID) {
+        currentDetectionMode = (uint8_t)mode;
+      }
+    }
     Serial.printf("[Config] zoneMode=%d  brightness=%d%%  audio=%s  visual=%s\n",
                   currentZoneMode, (int)(currentBrightness / 0.64f),
                   audioEnabled ? "on" : "off", visualEnabled ? "on" : "off");
 
     // Relay updated settings to MainController so its zone computation matches
     sendConfigToMainController();
+    sendDetectionModeToMainController();
 
   } else if (strcmp(type, "navigate") == 0) {
     const char* action = doc["action"] | "";
@@ -857,6 +888,8 @@ void sendStatus(AsyncWebSocketClient* client) {
   bool ledControllerConnected =
       (lastLedControllerStatusMs != 0) &&
       ((nowMs - lastLedControllerStatusMs) <= COMPONENT_TIMEOUT_MS);
+  uint8_t detectionModeForUi =
+      mainControllerConnected ? lastMainDetectionMode : currentDetectionMode;
 
   uint8_t sensorMask = mainControllerConnected ? latestSensorSeenMask : 0;
   int leftPodOnlineSensors = 0;
@@ -883,6 +916,7 @@ void sendStatus(AsyncWebSocketClient* client) {
   doc["yellowThreshold"]= (int)(DIST_RING4 / 10.0f);
   doc["audioEnabled"]   = audioEnabled;
   doc["visualEnabled"]  = visualEnabled;
+  doc["detectionMode"]  = (int)detectionModeForUi;
   doc["mainControllerConnected"] = mainControllerConnected;
   doc["ledControllerConnected"] = ledControllerConnected;
   doc["leftPodState"] = leftPodState;
@@ -977,6 +1011,7 @@ void setup() {
 
   // Sync default settings to MainController on boot
   sendConfigToMainController();
+  sendDetectionModeToMainController();
   Serial.println("[Config] Initial settings broadcast to MainController");
 }
 

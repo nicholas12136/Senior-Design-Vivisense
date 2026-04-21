@@ -15,10 +15,12 @@ import { sendMessage, onMessage, offMessage } from '../utils/websocket.js';
 type FeedbackMode = 'sector' | 'radar';
 type AudioFeedbackMode = 'tonal' | 'verbal';
 type SectorCount = 4 | 6 | 8;
+type DetectionMode = 0 | 1 | 2;
 
 interface AdvancedSettings {
   thresholds: { redMax: number; yellowMax: number }; // distances in cm
   sectorCount: SectorCount;
+  detectionMode: DetectionMode;
   activeSectors: Partial<Record<Sector, boolean>>;
   brightness: number;
 }
@@ -50,6 +52,7 @@ function defaultState(): ConfigState {
     advanced: {
       thresholds: { redMax: 60, yellowMax: 150 },
       sectorCount: 6,
+      detectionMode: 2,
       activeSectors: buildDefaultSectors(6),
       brightness: 100,
     },
@@ -85,7 +88,7 @@ function refreshPreview(): void {
 // Sends the current advanced settings to the ESP32 for obstacle detection mode.
 // Called whenever settings change so the device stays in sync even when not previewing.
 function sendConfig(): void {
-  const { thresholds, sectorCount, brightness } = state.advanced;
+  const { thresholds, sectorCount, brightness, detectionMode } = state.advanced;
   const labels = getSectorLabels(sectorCount);
   const activeSectorsArray = labels.map(s => state.advanced.activeSectors[s] ?? true);
   sendMessage({
@@ -95,6 +98,7 @@ function sendConfig(): void {
     redThreshold:    thresholds.redMax,
     yellowThreshold: thresholds.yellowMax,
     activeSectors:   activeSectorsArray,
+    detectionMode:   detectionMode,
     audioEnabled:    state.audioEnabled,
     visualEnabled:   state.visualEnabled,
   });
@@ -136,6 +140,7 @@ function applyStatus(msg: Record<string, unknown>): void {
   const brightness      = msg['brightness']      as number  | undefined;
   const redThreshold    = msg['redThreshold']    as number  | undefined;
   const yellowThreshold = msg['yellowThreshold'] as number  | undefined;
+  const detectionMode   = msg['detectionMode']   as number  | undefined;
   const activeSectors   = msg['activeSectors']   as boolean[] | undefined;
   const audioEn         = msg['audioEnabled']    as boolean | undefined;
   const visualEn        = msg['visualEnabled']   as boolean | undefined;
@@ -146,6 +151,8 @@ function applyStatus(msg: Record<string, unknown>): void {
   if (brightness      !== undefined) state.advanced.brightness           = brightness;
   if (redThreshold    !== undefined) state.advanced.thresholds.redMax    = redThreshold;
   if (yellowThreshold !== undefined) state.advanced.thresholds.yellowMax = yellowThreshold;
+  if (detectionMode !== undefined && [0, 1, 2].includes(detectionMode))
+    state.advanced.detectionMode = detectionMode as DetectionMode;
   if (activeSectors   !== undefined) {
     getSectorLabels(state.advanced.sectorCount).forEach((s, i) => {
       state.advanced.activeSectors[s] = activeSectors[i] ?? true;
@@ -173,9 +180,13 @@ function applyStatus(msg: Record<string, unknown>): void {
   if (yellowValEl  && yellowThreshold !== undefined) yellowValEl.textContent = String(yellowThreshold);
   if (greenStartsEl && yellowThreshold !== undefined) greenStartsEl.textContent = String(yellowThreshold);
 
+  document.querySelectorAll<HTMLButtonElement>('.detection-mode-btn').forEach(btn => {
+    btn.classList.toggle('active', Number(btn.dataset['mode']) === state.advanced.detectionMode);
+  });
+
   // Sector count buttons + toggles (re-render if zone or sector state changed)
   if (zoneMode !== undefined || activeSectors !== undefined) {
-    document.querySelectorAll<HTMLButtonElement>('.sector-count-btn').forEach(btn => {
+    document.querySelectorAll<HTMLButtonElement>('.sector-count-btn[data-count]').forEach(btn => {
       btn.classList.toggle('active', Number(btn.dataset['count']) === state.advanced.sectorCount);
     });
     const container = document.getElementById('sector-toggles-container');
@@ -228,7 +239,7 @@ export function renderFeedbackConfig(): string {
     <line x1="42" y1="104" x2="78" y2="104" stroke="#764ba2" stroke-width="4.5" stroke-linecap="round"/>
   </svg>`;
 
-  const { thresholds, sectorCount, brightness } = state.advanced;
+  const { thresholds, sectorCount, brightness, detectionMode } = state.advanced;
   const previewSVG = buildRingSVG(220, advancedColorFn, brightness, true, getSectorLabels(sectorCount));
 
   const sectorTogglesHTML = renderSectorToggles();
@@ -334,6 +345,16 @@ export function renderFeedbackConfig(): string {
                 <span class="color-dot dot-yellow"></span>
                 Yellow beyond <span id="green-starts-val">${thresholds.yellowMax}</span> cm
               </p>
+            </div>
+          </div>
+
+          <!-- Sector count + toggles -->
+          <div class="subsection">
+            <h3 class="subsection-title">Detection Mode</h3>
+            <div class="sector-count-selector">
+              <button class="sector-count-btn detection-mode-btn${detectionMode === 0 ? ' active' : ''}" data-mode="0">Direct</button>
+              <button class="sector-count-btn detection-mode-btn${detectionMode === 1 ? ' active' : ''}" data-mode="1">Cartesian</button>
+              <button class="sector-count-btn detection-mode-btn${detectionMode === 2 ? ' active' : ''}" data-mode="2">Polar</button>
             </div>
           </div>
 
@@ -501,8 +522,19 @@ export function initFeedbackConfig(): void {
     if (previewActive) sendPreview(true);
   });
 
+  document.querySelectorAll<HTMLButtonElement>('.detection-mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const mode = Number(btn.dataset['mode']) as DetectionMode;
+      if (mode === state.advanced.detectionMode) return;
+      state.advanced.detectionMode = mode;
+      document.querySelectorAll('.detection-mode-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      sendConfig();
+    });
+  });
+
   // Sector count selector
-  document.querySelectorAll<HTMLButtonElement>('.sector-count-btn').forEach(btn => {
+  document.querySelectorAll<HTMLButtonElement>('.sector-count-btn[data-count]').forEach(btn => {
     btn.addEventListener('click', () => {
       const count = Number(btn.dataset['count']) as SectorCount;
       if (count === state.advanced.sectorCount) return;
@@ -515,7 +547,7 @@ export function initFeedbackConfig(): void {
       state.advanced.sectorCount = count;
       state.advanced.activeSectors = newSectors;
 
-      document.querySelectorAll('.sector-count-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.sector-count-btn[data-count]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
 
       const container = document.getElementById('sector-toggles-container');
