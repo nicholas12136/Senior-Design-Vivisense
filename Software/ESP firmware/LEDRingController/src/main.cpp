@@ -343,14 +343,13 @@ static void processZoneProximity(const ZoneProximityPacket& pkt) {
     else                        ring = 6;
 
     uint8_t color = ringToColorCode(ring);
-
-    if (ring == 1) {
-      frame.leds[92] = color;
-    } else {
+    // Sector mode should fill the full sector (rings 2..6) using the
+    // closest obstacle's color, not only a single ring band.
+    for (int drawRing = 2; drawRing <= 6; drawRing++) {
       int* leds;
-      if (numZones == 4)      leds = getZone4(ring, zoneAngles[z]);
-      else if (numZones == 8) leds = getZone8(ring, zoneAngles[z]);
-      else                    leds = getZone6(ring, zoneAngles[z]);
+      if (numZones == 4)      leds = getZone4(drawRing, zoneAngles[z]);
+      else if (numZones == 8) leds = getZone8(drawRing, zoneAngles[z]);
+      else                    leds = getZone6(drawRing, zoneAngles[z]);
       fillZoneInFrame(frame, leds, color);
     }
   }
