@@ -51,6 +51,31 @@
 
 static uint8_t LED_ESP32_MAC[] = {0xE0, 0x8C, 0xFE, 0xB4, 0xE0, 0x6C};
 
+// Broadcast MAC used to send ConfigPackets to MainController.
+// MainController receives them via its own broadcast peer registration.
+static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+// ── Beta: inter-ESP32 packet types ────────────────────────────────────────────
+const uint8_t MSG_CONFIG         = 0xB1;
+const uint8_t MSG_ZONE_PROXIMITY = 0xB3;
+
+struct __attribute__((packed)) ConfigPacket {
+  uint8_t  msg_type;           // MSG_CONFIG
+  uint8_t  zone_mode;          // 4, 6, or 8
+  uint8_t  brightness;         // 0–64
+  uint16_t red_threshold_mm;
+  uint16_t yellow_threshold_mm;
+  uint8_t  audio_enabled;
+  uint8_t  visual_enabled;
+  uint8_t  active_sectors;     // bitmask — bit N = zone N enabled
+};                             // 10 bytes
+
+struct __attribute__((packed)) ZoneProximityPacket {
+  uint8_t msg_type;
+  uint8_t num_zones;
+  float   closest_mm[8]; // 1e9 = no obstacle in zone
+};                        // 34 bytes
+
 #define I2S_BCK_IO  27
 #define I2S_WS_IO   26
 #define I2S_DO_IO   25
@@ -193,6 +218,100 @@ int r6_8_W[]  = {22, 23, 24, 25, -1};  int r6_8_NW[] = {26, 27, 28, 29, -1};
 // ESP-NOW HELPERS
 // =========================================================
 
+// ── Beta: forward declarations (functions defined later in this file) ─────────
+static uint8_t ringToColorCode(int ring);
+static void fillZoneInFrame(LedFrame_t &frame, int *ledArray, uint8_t colorCode);
+static void sendLedFrame(const LedFrame_t &frame);
+int *getZone4(int ring, float angleDeg);
+int *getZone6(int ring, float angleDeg);
+int *getZone8(int ring, float angleDeg);
+
+// ── Beta: incoming ZoneProximityPacket from MainController ────────────────────
+
+// Representative angles for each zone index, used to select LED arrays.
+// Matches the ZONE*_ANGLES arrays from the preview section below.
+static const float kZone4Angles[] = {0.0f, 90.0f, 180.0f, -90.0f};
+static const float kZone6Angles[] = {0.0f, 60.0f, 120.0f, 180.0f, -120.0f, -60.0f};
+static const float kZone8Angles[] = {0.0f, 45.0f, 90.0f, 135.0f, 180.0f, -135.0f, -90.0f, -45.0f};
+
+// Builds and sends one LED frame from per-zone closest distances received from
+// MainController. Reuses all existing zone arrays and color logic.
+void processZoneProximity(const ZoneProximityPacket &pkt)
+{
+  if (previewMode)    return;
+  if (!visualEnabled) return;
+
+  int numZones = (int)pkt.num_zones;
+  if (numZones != 4 && numZones != 6 && numZones != 8) return;
+
+  const float *zoneAngles = (numZones == 4) ? kZone4Angles :
+                            (numZones == 8) ? kZone8Angles : kZone6Angles;
+
+  LedFrame_t frame = {};
+  frame.brightness = (uint8_t)currentBrightness;
+
+  for (int z = 0; z < numZones; z++)
+  {
+    float dist = pkt.closest_mm[z];
+    if (dist >= 3000.0f) continue;
+    if (!currentActiveSectors[z]) continue;
+
+    int ring;
+    if      (dist < DIST_RING1) ring = 1;
+    else if (dist < DIST_RING2) ring = 2;
+    else if (dist < DIST_RING3) ring = 3;
+    else if (dist < DIST_RING4) ring = 4;
+    else if (dist < DIST_RING5) ring = 5;
+    else                        ring = 6;
+
+    uint8_t color = ringToColorCode(ring);
+
+    if (ring == 1)
+    {
+      frame.leds[92] = color; // center LED is omnidirectional
+    }
+    else
+    {
+      int *leds;
+      if (numZones == 4)      leds = getZone4(ring, zoneAngles[z]);
+      else if (numZones == 8) leds = getZone8(ring, zoneAngles[z]);
+      else                    leds = getZone6(ring, zoneAngles[z]);
+      fillZoneInFrame(frame, leds, color);
+    }
+  }
+  sendLedFrame(frame);
+}
+
+// ESP-NOW receive callback — handles ZoneProximityPackets from MainController.
+void onEspNowReceived(const uint8_t *mac, const uint8_t *data, int len)
+{
+  if (len == (int)sizeof(ZoneProximityPacket))
+  {
+    const ZoneProximityPacket *pkt =
+        reinterpret_cast<const ZoneProximityPacket *>(data);
+    if (pkt->msg_type == MSG_ZONE_PROXIMITY)
+      processZoneProximity(*pkt);
+  }
+}
+
+// Sends current settings to MainController so it uses the same thresholds and
+// zone mode when computing closest distances.
+void sendConfigToMainController()
+{
+  ConfigPacket cfg;
+  cfg.msg_type            = MSG_CONFIG;
+  cfg.zone_mode           = (uint8_t)currentZoneMode;
+  cfg.brightness          = (uint8_t)currentBrightness;
+  cfg.red_threshold_mm    = (uint16_t)DIST_RING2;
+  cfg.yellow_threshold_mm = (uint16_t)DIST_RING4;
+  cfg.audio_enabled       = audioEnabled ? 1 : 0;
+  cfg.visual_enabled      = visualEnabled ? 1 : 0;
+  cfg.active_sectors      = 0;
+  for (int i = 0; i < currentZoneMode; i++)
+    if (currentActiveSectors[i]) cfg.active_sectors |= (uint8_t)(1 << i);
+  esp_now_send(BROADCAST_MAC, (const uint8_t *)&cfg, sizeof(cfg));
+}
+
 static uint8_t ringToColorCode(int ring) {
   if (ring <= 2) return LED_COLOR_RED;
   if (ring <= 4) return LED_COLOR_ORANGE;
@@ -227,15 +346,34 @@ void initEspNow() {
     return;
   }
   esp_now_register_send_cb(onEspNowSent);
-  esp_now_peer_info_t peerInfo = {};
-  memcpy(peerInfo.peer_addr, LED_ESP32_MAC, 6);
-  peerInfo.channel = ESPNOW_CHANNEL;
-  peerInfo.ifidx   = WIFI_IF_AP;   // main ESP32 is AP-only; send via AP interface
-  peerInfo.encrypt = false;
-  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-    Serial.println("[ESP-NOW] Add peer FAILED");
-  } else {
-    Serial.println("[ESP-NOW] Peer registered — LED ESP32 ready");
+
+  // Receive ZoneProximityPackets from MainController
+  esp_now_register_recv_cb(onEspNowReceived);
+
+  // LED controller peer (unicast — LED frames for normal operation + preview)
+  {
+    esp_now_peer_info_t peerInfo = {};
+    memcpy(peerInfo.peer_addr, LED_ESP32_MAC, 6);
+    peerInfo.channel = ESPNOW_CHANNEL;
+    peerInfo.ifidx   = WIFI_IF_AP;
+    peerInfo.encrypt = false;
+    if (esp_now_add_peer(&peerInfo) != ESP_OK)
+      Serial.println("[ESP-NOW] LED peer FAILED");
+    else
+      Serial.println("[ESP-NOW] LED peer registered");
+  }
+
+  // Broadcast peer — used to send ConfigPackets to MainController
+  {
+    esp_now_peer_info_t broadcastPeer = {};
+    memcpy(broadcastPeer.peer_addr, BROADCAST_MAC, 6);
+    broadcastPeer.channel = ESPNOW_CHANNEL;
+    broadcastPeer.ifidx   = WIFI_IF_AP;
+    broadcastPeer.encrypt = false;
+    if (esp_now_add_peer(&broadcastPeer) != ESP_OK)
+      Serial.println("[ESP-NOW] Broadcast peer FAILED");
+    else
+      Serial.println("[ESP-NOW] Broadcast peer registered (ConfigPacket channel)");
   }
 }
 
@@ -563,12 +701,7 @@ void handleWebSocketMessage(const char* msg) {
 
   const char* type = doc["type"] | "";
 
-  if (strcmp(type, "obstacle") == 0) {
-    float x = doc["x"].as<float>();
-    float y = doc["y"].as<float>();
-    processCoordinates(x, y);
-
-  } else if (strcmp(type, "config") == 0) {
+  if (strcmp(type, "config") == 0) {
     if (!doc["zoneMode"].isNull()) {
       int mode = doc["zoneMode"].as<int>();
       if (mode == 4 || mode == 6 || mode == 8) currentZoneMode = mode;
@@ -597,6 +730,9 @@ void handleWebSocketMessage(const char* msg) {
     Serial.printf("[Config] zoneMode=%d  brightness=%d%%  audio=%s  visual=%s\n",
                   currentZoneMode, (int)(currentBrightness / 0.64f),
                   audioEnabled ? "on" : "off", visualEnabled ? "on" : "off");
+
+    // Relay updated settings to MainController so its zone computation matches
+    sendConfigToMainController();
 
   } else if (strcmp(type, "navigate") == 0) {
     const char* action = doc["action"] | "";
@@ -741,27 +877,13 @@ void setup() {
   httpServer.begin();
   Serial.println("[HTTP] Server started on port 80");
 
+  // Sync default settings to MainController on boot
+  sendConfigToMainController();
+  Serial.println("[Config] Initial settings broadcast to MainController");
 }
 
 void loop() {
   // Keep WebSocket connections clean
   wsServer.cleanupClients();
-
-  // Optional serial pass-through for bench testing without a browser
-  if (Serial.available()) {
-    String input = Serial.readStringUntil('\n');
-    input.trim();
-    if (input.length() == 0) return;
-
-    int comma = input.indexOf(',');
-    if (comma != -1) {
-      float x = input.substring(0, comma).toFloat();
-      float y = input.substring(comma + 1).toFloat();
-      float d = sqrt(x * x + y * y);
-      Serial.printf("X: %.1f  Y: %.1f  Dist: %.1f mm\n", x, y, d);
-      processCoordinates(x, y);
-    }
-  }
-
 
 }

@@ -3,7 +3,9 @@
 #include <esp_wifi.h>
 #include <WiFi.h>
 #include <string.h>
+#include <math.h>
 #include "SensorAndPoint.h"
+#include "led_frame.h"
 
 // Minimal base receiver:
 // - ESP-NOW only
@@ -83,6 +85,35 @@ struct SyncResponsePacket
   uint32_t t3_pod_us;
 } __attribute__((packed));
 
+// ── Beta: inter-ESP32 packets ─────────────────────────────────────────────────
+
+const uint8_t MSG_CONFIG         = 0xB1; // CaregiverApp → MainController
+const uint8_t MSG_ZONE_PROXIMITY = 0xB3; // MainController → CaregiverApp
+
+// Sent by CaregiverApp when the caregiver changes settings in the browser UI.
+struct ConfigPacket
+{
+  uint8_t  msg_type;           // MSG_CONFIG
+  uint8_t  zone_mode;          // 4, 6, or 8
+  uint8_t  brightness;         // 0–64
+  uint16_t red_threshold_mm;
+  uint16_t yellow_threshold_mm;
+  uint8_t  audio_enabled;
+  uint8_t  visual_enabled;
+  uint8_t  active_sectors;     // bitmask — bit N = zone N enabled
+} __attribute__((packed));     // 10 bytes
+
+// Broadcast by MainController every ~67 ms with per-zone closest obstacle distance.
+// CaregiverApp receives this to build the LED frame.
+struct ZoneProximityPacket
+{
+  uint8_t msg_type;     // MSG_ZONE_PROXIMITY
+  uint8_t num_zones;    // matches currentNumZones (4, 6, or 8)
+  float   closest_mm[8]; // index = zone index; 1e9 means no obstacle in range
+} __attribute__((packed)); // 34 bytes
+
+static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
 Sensor sensors[NUM_SENSORS];
 uint8_t sensorSeen[NUM_SENSORS] = {0};
 uint32_t packetCountBySensor[NUM_SENSORS] = {0};
@@ -108,6 +139,22 @@ float wirelessUsAvgBySensor[NUM_SENSORS] = {0.0f};
 uint16_t dataSeqBySensor[NUM_SENSORS] = {0};
 uint32_t lastSyncSendMs = 0;
 const uint32_t SYNC_PERIOD_MS = 1000;
+
+// ── Beta: proximity detection state ──────────────────────────────────────────
+int     proximityNumZones       = 6;
+int     proximityBrightness     = 40;
+bool    proximityVisualEnabled  = true;
+uint8_t proximityActiveSectors  = 0xFF; // all zones on by default
+// Ring distance thresholds (mm) — updated by ConfigPacket
+float proximityDistRings[5] = {300.0f, 600.0f, 1050.0f, 1500.0f, 1950.0f};
+
+uint32_t lastProximityBroadcastMs = 0;
+const uint32_t PROXIMITY_PERIOD_MS = 67; // ~15 Hz
+uint8_t  broadcastPeerAdded = 0;
+
+// Forward declarations for proximity helpers (defined before setup())
+void applyProximityThresholds(float redMaxMm, float yellowMaxMm);
+void broadcastZoneProximity();
 
 int findSensorIndex(uint8_t id)
 {
@@ -318,6 +365,26 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
     }
   }
 
+  // ConfigPacket from CaregiverApp — update local proximity settings
+  if (len == (int)sizeof(ConfigPacket))
+  {
+    ConfigPacket cfg;
+    memcpy(&cfg, incomingData, sizeof(cfg));
+    if (cfg.msg_type == MSG_CONFIG)
+    {
+      if (cfg.zone_mode == 4 || cfg.zone_mode == 6 || cfg.zone_mode == 8)
+        proximityNumZones = cfg.zone_mode;
+      proximityBrightness    = cfg.brightness;
+      proximityVisualEnabled = (cfg.visual_enabled != 0);
+      proximityActiveSectors = cfg.active_sectors;
+      applyProximityThresholds(cfg.red_threshold_mm, cfg.yellow_threshold_mm);
+      Serial.printf("[Config] zones=%d bright=%d visual=%s sectors=0x%02X\n",
+                    proximityNumZones, proximityBrightness,
+                    proximityVisualEnabled ? "on" : "off", proximityActiveSectors);
+      return;
+    }
+  }
+
   SensorPacket pktV1;
   SensorPacketV2 pktV2;
   uint8_t isV2 = 0;
@@ -408,6 +475,81 @@ void maybeSendSyncRequests()
   }
 }
 
+// ── Beta: proximity helpers ───────────────────────────────────────────────────
+
+void applyProximityThresholds(float redMaxMm, float yellowMaxMm)
+{
+  if (redMaxMm <= 0 || yellowMaxMm <= redMaxMm) return;
+  proximityDistRings[0] = redMaxMm * 0.5f;
+  proximityDistRings[1] = redMaxMm;
+  proximityDistRings[2] = redMaxMm + (yellowMaxMm - redMaxMm) * 0.5f;
+  proximityDistRings[3] = yellowMaxMm;
+  proximityDistRings[4] = yellowMaxMm + (yellowMaxMm - redMaxMm) * 0.5f;
+}
+
+// Returns 0-based zone index matching the WebserverV3 getZoneIndex() convention.
+static int proximityZoneIndex(float angleDeg, int numZones)
+{
+  if (numZones == 4)
+  {
+    if (angleDeg >= -45  && angleDeg <  45)  return 0;
+    if (angleDeg >=  45  && angleDeg < 135)  return 1;
+    if (angleDeg < -135  || angleDeg >= 135) return 2;
+    return 3;
+  }
+  if (numZones == 8)
+  {
+    if (angleDeg >= -22.5  && angleDeg <  22.5)  return 0;
+    if (angleDeg >=  22.5  && angleDeg <  67.5)  return 1;
+    if (angleDeg >=  67.5  && angleDeg < 112.5)  return 2;
+    if (angleDeg >= 112.5  && angleDeg < 157.5)  return 3;
+    if (angleDeg < -157.5  || angleDeg >= 157.5) return 4;
+    if (angleDeg >= -157.5 && angleDeg < -112.5) return 5;
+    if (angleDeg >= -112.5 && angleDeg <  -67.5) return 6;
+    return 7;
+  }
+  // 6 zones (default)
+  if (angleDeg >= -30  && angleDeg <  30)  return 0;
+  if (angleDeg >=  30  && angleDeg <  90)  return 1;
+  if (angleDeg >=  90  && angleDeg < 150)  return 2;
+  if (angleDeg < -150  || angleDeg >= 150) return 3;
+  if (angleDeg >= -150 && angleDeg < -90)  return 4;
+  return 5;
+}
+
+void broadcastZoneProximity()
+{
+  ZoneProximityPacket pkt;
+  pkt.msg_type  = MSG_ZONE_PROXIMITY;
+  pkt.num_zones = (uint8_t)proximityNumZones;
+
+  for (int z = 0; z < 8; z++) pkt.closest_mm[z] = 1e9f;
+
+  // Accumulate closest valid world point per zone across all sensors
+  for (int s = 0; s < NUM_SENSORS; s++)
+  {
+    if (!sensorSeen[s]) continue;
+    for (int cell = 0; cell < 16; cell++)
+    {
+      const Point &p = sensors[s].latestWorldPoints[cell];
+      if (!p.isValid) continue;
+
+      // Horizontal (floor-plane) distance
+      float dist = sqrtf(p.worldX * p.worldX + p.worldY * p.worldY);
+      if (dist > 3000.0f) continue;
+
+      // atan2(-y, x) maps +y=LEFT coord to CW-from-forward angle in degrees
+      float angleDeg = atan2f(-p.worldY, p.worldX) * (180.0f / 3.14159265f);
+      int zone = proximityZoneIndex(angleDeg, proximityNumZones);
+      if (!(proximityActiveSectors & (1 << zone))) continue;
+
+      if (dist < pkt.closest_mm[zone]) pkt.closest_mm[zone] = dist;
+    }
+  }
+
+  esp_now_send(BROADCAST_MAC, (uint8_t *)&pkt, sizeof(pkt));
+}
+
 void setup()
 {
   Serial.begin(SERIAL_BAUD);
@@ -430,6 +572,21 @@ void setup()
   }
 
   esp_now_register_recv_cb(OnDataRecv);
+
+  // Broadcast peer — used to transmit ZoneProximityPackets to CaregiverApp
+  {
+    esp_now_peer_info_t peer = {};
+    memcpy(peer.peer_addr, BROADCAST_MAC, 6);
+    peer.ifidx  = WIFI_IF_STA;
+    peer.channel = ESPNOW_CHANNEL;
+    peer.encrypt = false;
+    if (esp_now_add_peer(&peer) == ESP_OK)
+    {
+      broadcastPeerAdded = 1;
+      Serial.println("Broadcast peer registered for ZoneProximityPackets");
+    }
+  }
+
   Serial.println("ESP-NOW receiver ready");
 }
 
@@ -438,5 +595,17 @@ void loop()
   processPendingSensors();
   maybeSendSyncRequests();
   emitReceiverStatusIfDue();
+
+  // Broadcast per-zone closest obstacle distances to CaregiverApp at ~15 Hz
+  if (proximityVisualEnabled && broadcastPeerAdded)
+  {
+    uint32_t nowMs = millis();
+    if ((nowMs - lastProximityBroadcastMs) >= PROXIMITY_PERIOD_MS)
+    {
+      lastProximityBroadcastMs = nowMs;
+      broadcastZoneProximity();
+    }
+  }
+
   delay(1);
 }

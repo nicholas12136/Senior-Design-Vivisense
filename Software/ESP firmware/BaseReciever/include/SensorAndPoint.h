@@ -226,6 +226,11 @@ public:
         point.targetStatus = targetStatus[cellId];
         point.numTargets = numTargets[cellId];
 
+        // VL53L7CX datasheet: status 5 = 100% confidence. All others are noise,
+        // wrap-around, sigma failure, or no target — don't emit a world point.
+        if (point.targetStatus != 5)
+            return point;
+
         if (point.measuredCellDistanceMm <= minimumValidDistanceMm)
             return point;
 
