@@ -5,7 +5,6 @@
 #include <string.h>
 #include <math.h>
 #include "SensorAndPoint.h"
-#include "led_frame.h"
 
 // Minimal base receiver:
 // - ESP-NOW only
@@ -15,7 +14,6 @@
 
 const uint8_t ESPNOW_CHANNEL = 1;
 const uint32_t SERIAL_BAUD = 115200;
-const uint8_t LATENCY_TEST_MODE = 0; // Set to 0 to disable clock-sync latency test mode.
 
 const int NUM_SENSORS = 8;
 const uint8_t SENSOR_IDS[NUM_SENSORS] = {1, 2, 3, 4, 5, 6, 7, 8};
@@ -50,39 +48,6 @@ struct SensorPacket
   uint16_t distance_mm[16];
   uint8_t target_status[16];
   uint8_t nb_targets[16];
-} __attribute__((packed));
-
-// V2 extends the data packet with sender-side timing metadata.
-struct SensorPacketV2
-{
-  uint8_t sensor_id;
-  uint32_t timestamp_ms;
-  uint16_t distance_mm[16];
-  uint8_t target_status[16];
-  uint8_t nb_targets[16];
-  uint16_t seq;
-  uint32_t t_send_us;
-} __attribute__((packed));
-
-const uint8_t MSG_SYNC_REQ = 0xA1;
-const uint8_t MSG_SYNC_RESP = 0xA2;
-
-struct SyncRequestPacket
-{
-  uint8_t msg_type;
-  uint8_t sensor_id;
-  uint16_t seq;
-  uint32_t t1_base_us;
-} __attribute__((packed));
-
-struct SyncResponsePacket
-{
-  uint8_t msg_type;
-  uint8_t sensor_id;
-  uint16_t seq;
-  uint32_t t1_base_us;
-  uint32_t t2_pod_us;
-  uint32_t t3_pod_us;
 } __attribute__((packed));
 
 // ── Beta: inter-ESP32 packets ─────────────────────────────────────────────────
@@ -125,20 +90,6 @@ uint32_t convertUsLastBySensor[NUM_SENSORS] = {0};
 float convertUsAvgBySensor[NUM_SENSORS] = {0.0f};
 uint32_t lastStatusEmitMs = 0;
 const uint32_t STATUS_EMIT_PERIOD_MS = 500;
-uint8_t sensorMacKnown[NUM_SENSORS] = {0};
-uint8_t sensorMacBySensor[NUM_SENSORS][6] = {{0}};
-uint8_t peerAddedBySensor[NUM_SENSORS] = {0};
-
-// Per-sensor latency test metrics. Valid only when LATENCY_TEST_MODE == 1 and V2 packets arrive.
-int32_t syncOffsetUsBySensor[NUM_SENSORS] = {0}; // pod clock - base clock
-uint32_t syncRttUsBySensor[NUM_SENSORS] = {0};
-uint8_t syncValidBySensor[NUM_SENSORS] = {0};
-uint16_t syncSeqBySensor[NUM_SENSORS] = {0};
-uint32_t wirelessUsLastBySensor[NUM_SENSORS] = {0};
-float wirelessUsAvgBySensor[NUM_SENSORS] = {0.0f};
-uint16_t dataSeqBySensor[NUM_SENSORS] = {0};
-uint32_t lastSyncSendMs = 0;
-const uint32_t SYNC_PERIOD_MS = 1000;
 const uint32_t SENSOR_STALE_TIMEOUT_MS = 400;
 
 // ── Beta: proximity detection state ──────────────────────────────────────────
@@ -148,11 +99,34 @@ bool    proximityVisualEnabled  = true;
 uint8_t proximityActiveSectors  = 0xFF; // all zones on by default
 // Ring distance thresholds (mm) — updated by ConfigPacket
 float proximityDistRings[5] = {300.0f, 600.0f, 1050.0f, 1500.0f, 1950.0f};
-float filteredClosestMmByZone[8] = {1e9f, 1e9f, 1e9f, 1e9f, 1e9f, 1e9f, 1e9f, 1e9f};
-uint8_t filteredValidByZone[8] = {0};
-uint8_t filteredMissCountByZone[8] = {0};
-const float PROXIMITY_DISTANCE_EMA_ALPHA = 0.35f;
-const uint8_t PROXIMITY_MISS_HOLD_FRAMES = 2; // hold ~130 ms at 15 Hz to reduce flicker.
+const uint8_t USE_OCCUPANCY_GRID = 1;
+
+// Occupancy grid parameters (wheelchair/body frame, mm):
+// - X axis: forward, sampled over [OCC_X_MIN_MM, OCC_X_MAX_MM)
+// - Y axis: left/right, sampled over [OCC_Y_MIN_MM, OCC_Y_MAX_MM)
+// - Cell size: OCC_GRID_RES_MM square cells
+// Example default envelope: 3.0 m forward by 3.0 m wide at 0.1 m resolution => 30x30 grid.
+const int OCC_GRID_RES_MM = 100;
+const int OCC_X_MIN_MM = 0;
+const int OCC_X_MAX_MM = 3000;
+const int OCC_Y_MIN_MM = -1500;
+const int OCC_Y_MAX_MM = 1500;
+const int OCC_GRID_COLS = (OCC_X_MAX_MM - OCC_X_MIN_MM) / OCC_GRID_RES_MM; // 30
+const int OCC_GRID_ROWS = (OCC_Y_MAX_MM - OCC_Y_MIN_MM) / OCC_GRID_RES_MM; // 30
+const int OCC_GRID_CELL_COUNT = OCC_GRID_COLS * OCC_GRID_ROWS; // 900
+
+// Temporal occupancy filter parameters:
+// - occConfidence[] stores per-cell confidence in [0,255]
+// - OCC_CONF_RISE increments confidence when a cell is hit in this frame
+// - OCC_CONF_DECAY decrements confidence when a cell is not hit
+// - OCC_ENTER_THRESHOLD / OCC_EXIT_THRESHOLD provide hysteresis for stable occupied/free state
+const uint8_t OCC_CONF_RISE = 90;
+const uint8_t OCC_CONF_DECAY = 24;
+const uint8_t OCC_ENTER_THRESHOLD = 120;
+const uint8_t OCC_EXIT_THRESHOLD = 80;
+
+uint8_t occConfidence[OCC_GRID_CELL_COUNT] = {0};
+uint8_t occOccupied[OCC_GRID_CELL_COUNT] = {0};
 
 uint32_t lastProximityBroadcastMs = 0;
 const uint32_t PROXIMITY_PERIOD_MS = 67; // ~15 Hz
@@ -162,6 +136,11 @@ uint8_t  broadcastPeerAdded = 0;
 void applyProximityThresholds(float redMaxMm, float yellowMaxMm);
 void broadcastZoneProximity();
 void invalidateStaleSensors();
+void clearOccupancyGrid();
+void accumulateGridHits(uint8_t hitMask[OCC_GRID_CELL_COUNT]);
+void updateOccupancyGrid(const uint8_t hitMask[OCC_GRID_CELL_COUNT]);
+void computeZoneProximityFromGrid(float closestMmByZone[8]);
+void computeZoneProximityDirect(float closestMmByZone[8]);
 
 int findSensorIndex(uint8_t id)
 {
@@ -185,48 +164,6 @@ void configureSensors()
         degreesToRadians(SENSOR_CONFIGS[i].alpha_deg),
         degreesToRadians(SENSOR_CONFIGS[i].beta_deg),
         degreesToRadians(SENSOR_CONFIGS[i].gamma_deg));
-  }
-}
-
-bool addPeerIfNeeded(int sensorIndex, const uint8_t *mac)
-{
-  if (peerAddedBySensor[sensorIndex])
-  {
-    return true;
-  }
-  esp_now_peer_info_t peer = {};
-  memcpy(peer.peer_addr, mac, 6);
-  peer.ifidx = WIFI_IF_STA;
-  peer.channel = ESPNOW_CHANNEL;
-  peer.encrypt = false;
-  esp_err_t res = esp_now_add_peer(&peer);
-  if (res == ESP_OK || res == ESP_ERR_ESPNOW_EXIST)
-  {
-    peerAddedBySensor[sensorIndex] = 1;
-    return true;
-  }
-  return false;
-}
-
-void updateWirelessLatencyMetrics(int idx, uint32_t rxCbUs, uint32_t tSendPodUs)
-{
-  if (!syncValidBySensor[idx])
-  {
-    return;
-  }
-
-  // Convert pod send time into base clock estimate:
-  // base ~= pod - offset, where offset = pod - base.
-  uint32_t tSendBaseEstUs = (uint32_t)((int32_t)tSendPodUs - syncOffsetUsBySensor[idx]);
-  uint32_t wirelessUs = rxCbUs - tSendBaseEstUs; // unsigned subtraction is wrap-safe for micros().
-  wirelessUsLastBySensor[idx] = wirelessUs;
-  if (wirelessUsAvgBySensor[idx] <= 0.0f)
-  {
-    wirelessUsAvgBySensor[idx] = (float)wirelessUs;
-  }
-  else
-  {
-    wirelessUsAvgBySensor[idx] = (0.85f * wirelessUsAvgBySensor[idx]) + (0.15f * (float)wirelessUs);
   }
 }
 
@@ -310,7 +247,7 @@ void emitReceiverStatusIfDue()
 
   for (int i = 0; i < NUM_SENSORS; i++)
   {
-    // S,sid,pkts,rx_hz,conv_us_last,conv_us_avg,wireless_us_last,wireless_us_avg,sync_rtt_us,sync_offset_us,sync_ok
+    // S,sid,pkts,rx_hz,conv_us_last,conv_us_avg
     Serial.print("S,");
     Serial.print(SENSOR_IDS[i]);
     Serial.print(",");
@@ -320,57 +257,13 @@ void emitReceiverStatusIfDue()
     Serial.print(",");
     Serial.print(convertUsLastBySensor[i]);
     Serial.print(",");
-    Serial.print(convertUsAvgBySensor[i], 1);
-    Serial.print(",");
-    Serial.print(wirelessUsLastBySensor[i]);
-    Serial.print(",");
-    Serial.print(wirelessUsAvgBySensor[i], 1);
-    Serial.print(",");
-    Serial.print(syncRttUsBySensor[i]);
-    Serial.print(",");
-    Serial.print(syncOffsetUsBySensor[i]);
-    Serial.print(",");
-    Serial.println(syncValidBySensor[i] ? 1 : 0);
+    Serial.println(convertUsAvgBySensor[i], 1);
   }
 }
 
 void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
 {
-  uint32_t rxCbUs = micros();
-
-  if (LATENCY_TEST_MODE && len == (int)sizeof(SyncResponsePacket))
-  {
-    SyncResponsePacket resp;
-    memcpy(&resp, incomingData, sizeof(resp));
-    if (resp.msg_type == MSG_SYNC_RESP)
-    {
-      int idx = findSensorIndex(resp.sensor_id);
-      if (idx >= 0)
-      {
-        uint32_t t1 = resp.t1_base_us;
-        uint32_t t2 = resp.t2_pod_us;
-        uint32_t t3 = resp.t3_pod_us;
-        uint32_t t4 = rxCbUs;
-
-        // NTP-style offset in microseconds: pod clock - base clock.
-        int32_t offsetNew = (int32_t)(((int64_t)((int32_t)(t2 - t1)) + (int64_t)((int32_t)(t3 - t4))) / 2);
-        uint32_t rttNew = (t4 - t1) - (t3 - t2);
-
-        if (!syncValidBySensor[idx])
-        {
-          syncOffsetUsBySensor[idx] = offsetNew;
-        }
-        else
-        {
-          // Simple EMA to reduce jitter.
-          syncOffsetUsBySensor[idx] = (int32_t)((0.9f * (float)syncOffsetUsBySensor[idx]) + (0.1f * (float)offsetNew));
-        }
-        syncRttUsBySensor[idx] = rttNew;
-        syncValidBySensor[idx] = 1;
-      }
-      return;
-    }
-  }
+  (void)mac;
 
   // ConfigPacket from CaregiverApp — update local proximity settings
   if (len == (int)sizeof(ConfigPacket))
@@ -385,6 +278,10 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
       proximityVisualEnabled = (cfg.visual_enabled != 0);
       proximityActiveSectors = cfg.active_sectors;
       applyProximityThresholds(cfg.red_threshold_mm, cfg.yellow_threshold_mm);
+      if (!proximityVisualEnabled)
+      {
+        clearOccupancyGrid();
+      }
       Serial.printf("[Config] zones=%d bright=%d visual=%s sectors=0x%02X\n",
                     proximityNumZones, proximityBrightness,
                     proximityVisualEnabled ? "on" : "off", proximityActiveSectors);
@@ -392,51 +289,26 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
     }
   }
 
-  SensorPacket pktV1;
-  SensorPacketV2 pktV2;
-  uint8_t isV2 = 0;
-  if (len == (int)sizeof(SensorPacketV2))
-  {
-    memcpy(&pktV2, incomingData, sizeof(SensorPacketV2));
-    isV2 = 1;
-  }
-  else if (len == (int)sizeof(SensorPacket))
-  {
-    memcpy(&pktV1, incomingData, sizeof(SensorPacket));
-    isV2 = 0;
-  }
-  else
+  if (len != (int)sizeof(SensorPacket))
   {
     return;
   }
 
-  uint8_t sid = isV2 ? pktV2.sensor_id : pktV1.sensor_id;
+  SensorPacket pkt;
+  memcpy(&pkt, incomingData, sizeof(pkt));
+
+  uint8_t sid = pkt.sensor_id;
   int idx = findSensorIndex(sid);
   if (idx < 0)
     return;
 
-  if (!sensorMacKnown[idx])
-  {
-    memcpy(sensorMacBySensor[idx], mac, 6);
-    sensorMacKnown[idx] = 1;
-    addPeerIfNeeded(idx, mac);
-  }
-
   sensors[idx].setAllCellData(
-      isV2 ? pktV2.distance_mm : pktV1.distance_mm,
-      isV2 ? pktV2.target_status : pktV1.target_status,
-      isV2 ? pktV2.nb_targets : pktV1.nb_targets);
+      pkt.distance_mm,
+      pkt.target_status,
+      pkt.nb_targets);
   sensorSeen[idx] = 1;
   packetCountBySensor[idx]++;
-  lastSensorTimestampMs[idx] = isV2 ? pktV2.timestamp_ms : pktV1.timestamp_ms;
-  if (isV2)
-  {
-    dataSeqBySensor[idx] = pktV2.seq;
-    if (LATENCY_TEST_MODE)
-    {
-      updateWirelessLatencyMetrics(idx, rxCbUs, pktV2.t_send_us);
-    }
-  }
+  lastSensorTimestampMs[idx] = pkt.timestamp_ms;
   uint32_t nowMs = millis();
   if (lastRxMsBySensor[idx] != 0)
   {
@@ -448,38 +320,6 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
   }
   lastRxMsBySensor[idx] = nowMs;
   sensorPendingProcess[idx] = 1;
-}
-
-void maybeSendSyncRequests()
-{
-  if (!LATENCY_TEST_MODE)
-  {
-    return;
-  }
-  uint32_t nowMs = millis();
-  if ((nowMs - lastSyncSendMs) < SYNC_PERIOD_MS)
-  {
-    return;
-  }
-  lastSyncSendMs = nowMs;
-
-  for (int i = 0; i < NUM_SENSORS; i++)
-  {
-    if (!sensorMacKnown[i])
-    {
-      continue;
-    }
-    if (!addPeerIfNeeded(i, sensorMacBySensor[i]))
-    {
-      continue;
-    }
-    SyncRequestPacket req;
-    req.msg_type = MSG_SYNC_REQ;
-    req.sensor_id = SENSOR_IDS[i];
-    req.seq = ++syncSeqBySensor[i];
-    req.t1_base_us = micros();
-    esp_now_send(sensorMacBySensor[i], (uint8_t *)&req, sizeof(req));
-  }
 }
 
 // ── Beta: proximity helpers ───────────────────────────────────────────────────
@@ -497,6 +337,68 @@ void invalidateStaleSensors()
     sensorPendingProcess[i] = 0;
     rxHzBySensor[i] = 0.0f;
     Serial.printf("[Sensor] sid=%d marked stale after %lums\n", SENSOR_IDS[i], ageMs);
+  }
+}
+
+static int occupancyCellIndexFromWorld(float worldXmm, float worldYmm)
+{
+  if (worldXmm < OCC_X_MIN_MM || worldXmm >= OCC_X_MAX_MM) return -1;
+  if (worldYmm < OCC_Y_MIN_MM || worldYmm >= OCC_Y_MAX_MM) return -1;
+
+  int col = (int)((worldXmm - OCC_X_MIN_MM) / OCC_GRID_RES_MM);
+  int row = (int)((worldYmm - OCC_Y_MIN_MM) / OCC_GRID_RES_MM);
+  if (col < 0 || col >= OCC_GRID_COLS || row < 0 || row >= OCC_GRID_ROWS) return -1;
+  return row * OCC_GRID_COLS + col;
+}
+
+void clearOccupancyGrid()
+{
+  for (int i = 0; i < OCC_GRID_CELL_COUNT; i++)
+  {
+    occConfidence[i] = 0;
+    occOccupied[i] = 0;
+  }
+}
+
+void accumulateGridHits(uint8_t hitMask[OCC_GRID_CELL_COUNT])
+{
+  for (int i = 0; i < OCC_GRID_CELL_COUNT; i++) hitMask[i] = 0;
+
+  for (int s = 0; s < NUM_SENSORS; s++)
+  {
+    if (!sensorSeen[s]) continue;
+    for (int cell = 0; cell < 16; cell++)
+    {
+      const Point &p = sensors[s].latestWorldPoints[cell];
+      if (!p.isValid) continue;
+
+      float dist = sqrtf(p.worldX * p.worldX + p.worldY * p.worldY);
+      if (dist > 3000.0f) continue;
+
+      int idx = occupancyCellIndexFromWorld(p.worldX, p.worldY);
+      if (idx >= 0) hitMask[idx] = 1;
+    }
+  }
+}
+
+void updateOccupancyGrid(const uint8_t hitMask[OCC_GRID_CELL_COUNT])
+{
+  for (int i = 0; i < OCC_GRID_CELL_COUNT; i++)
+  {
+    uint8_t conf = occConfidence[i];
+    if (hitMask[i])
+    {
+      uint16_t boosted = (uint16_t)conf + OCC_CONF_RISE;
+      conf = (boosted > 255U) ? 255U : (uint8_t)boosted;
+    }
+    else
+    {
+      conf = (conf > OCC_CONF_DECAY) ? (uint8_t)(conf - OCC_CONF_DECAY) : 0;
+    }
+    occConfidence[i] = conf;
+
+    if (!occOccupied[i] && conf >= OCC_ENTER_THRESHOLD) occOccupied[i] = 1;
+    else if (occOccupied[i] && conf <= OCC_EXIT_THRESHOLD) occOccupied[i] = 0;
   }
 }
 
@@ -540,16 +442,35 @@ static int proximityZoneIndex(float angleDeg, int numZones)
   return 5;
 }
 
-void broadcastZoneProximity()
+void computeZoneProximityFromGrid(float closestMmByZone[8])
 {
-  ZoneProximityPacket pkt;
-  pkt.msg_type  = MSG_ZONE_PROXIMITY;
-  pkt.num_zones = (uint8_t)proximityNumZones;
+  for (int z = 0; z < 8; z++) closestMmByZone[z] = 1e9f;
 
-  float rawClosestMmByZone[8];
-  for (int z = 0; z < 8; z++) rawClosestMmByZone[z] = 1e9f;
+  for (int idx = 0; idx < OCC_GRID_CELL_COUNT; idx++)
+  {
+    if (!occOccupied[idx]) continue;
 
-  // Accumulate closest valid world point per zone across all sensors
+    int row = idx / OCC_GRID_COLS;
+    int col = idx % OCC_GRID_COLS;
+
+    float x = OCC_X_MIN_MM + ((float)col + 0.5f) * (float)OCC_GRID_RES_MM;
+    float y = OCC_Y_MIN_MM + ((float)row + 0.5f) * (float)OCC_GRID_RES_MM;
+    float dist = sqrtf(x * x + y * y);
+    if (dist > 3000.0f) continue;
+
+    float angleDeg = atan2f(-y, x) * (180.0f / 3.14159265f);
+    int zone = proximityZoneIndex(angleDeg, proximityNumZones);
+    if (zone < 0 || zone >= proximityNumZones) continue;
+    if (!(proximityActiveSectors & (1 << zone))) continue;
+
+    if (dist < closestMmByZone[zone]) closestMmByZone[zone] = dist;
+  }
+}
+
+void computeZoneProximityDirect(float closestMmByZone[8])
+{
+  for (int z = 0; z < 8; z++) closestMmByZone[z] = 1e9f;
+
   for (int s = 0; s < NUM_SENSORS; s++)
   {
     if (!sensorSeen[s]) continue;
@@ -558,62 +479,42 @@ void broadcastZoneProximity()
       const Point &p = sensors[s].latestWorldPoints[cell];
       if (!p.isValid) continue;
 
-      // Horizontal (floor-plane) distance
       float dist = sqrtf(p.worldX * p.worldX + p.worldY * p.worldY);
       if (dist > 3000.0f) continue;
 
-      // atan2(-y, x) maps +y=LEFT coord to CW-from-forward angle in degrees
       float angleDeg = atan2f(-p.worldY, p.worldX) * (180.0f / 3.14159265f);
       int zone = proximityZoneIndex(angleDeg, proximityNumZones);
+      if (zone < 0 || zone >= proximityNumZones) continue;
       if (!(proximityActiveSectors & (1 << zone))) continue;
 
-      if (dist < rawClosestMmByZone[zone]) rawClosestMmByZone[zone] = dist;
+      if (dist < closestMmByZone[zone]) closestMmByZone[zone] = dist;
     }
+  }
+}
+
+void broadcastZoneProximity()
+{
+  ZoneProximityPacket pkt;
+  pkt.msg_type  = MSG_ZONE_PROXIMITY;
+  pkt.num_zones = (uint8_t)proximityNumZones;
+
+  float closestMmByZone[8];
+  if (USE_OCCUPANCY_GRID)
+  {
+    uint8_t hitMask[OCC_GRID_CELL_COUNT];
+    accumulateGridHits(hitMask);
+    updateOccupancyGrid(hitMask);
+    computeZoneProximityFromGrid(closestMmByZone);
+  }
+  else
+  {
+    computeZoneProximityDirect(closestMmByZone);
   }
 
   for (int z = 0; z < 8; z++)
   {
     bool zoneEnabled = (z < proximityNumZones) && ((proximityActiveSectors & (1 << z)) != 0);
-    if (!zoneEnabled)
-    {
-      filteredValidByZone[z] = 0;
-      filteredMissCountByZone[z] = 0;
-      filteredClosestMmByZone[z] = 1e9f;
-      pkt.closest_mm[z] = 1e9f;
-      continue;
-    }
-
-    float rawDist = rawClosestMmByZone[z];
-    if (rawDist < 1e9f)
-    {
-      if (!filteredValidByZone[z])
-      {
-        filteredClosestMmByZone[z] = rawDist;
-      }
-      else
-      {
-        filteredClosestMmByZone[z] =
-            (1.0f - PROXIMITY_DISTANCE_EMA_ALPHA) * filteredClosestMmByZone[z] +
-            (PROXIMITY_DISTANCE_EMA_ALPHA * rawDist);
-      }
-      filteredValidByZone[z] = 1;
-      filteredMissCountByZone[z] = 0;
-      pkt.closest_mm[z] = filteredClosestMmByZone[z];
-      continue;
-    }
-
-    if (filteredValidByZone[z] && filteredMissCountByZone[z] < PROXIMITY_MISS_HOLD_FRAMES)
-    {
-      filteredMissCountByZone[z]++;
-      pkt.closest_mm[z] = filteredClosestMmByZone[z];
-    }
-    else
-    {
-      filteredValidByZone[z] = 0;
-      filteredMissCountByZone[z] = 0;
-      filteredClosestMmByZone[z] = 1e9f;
-      pkt.closest_mm[z] = 1e9f;
-    }
+    pkt.closest_mm[z] = zoneEnabled ? closestMmByZone[z] : 1e9f;
   }
 
   esp_now_send(BROADCAST_MAC, (uint8_t *)&pkt, sizeof(pkt));
@@ -665,7 +566,6 @@ void loop()
 {
   invalidateStaleSensors();
   processPendingSensors();
-  maybeSendSyncRequests();
   emitReceiverStatusIfDue();
 
   // Broadcast per-zone closest obstacle distances to LEDRingController at ~15 Hz

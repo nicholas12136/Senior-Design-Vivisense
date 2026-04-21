@@ -21,7 +21,7 @@ constexpr uint8_t ADDR_B = 0x44;
 // const uint8_t baseMac[6] = {0x88, 0x56, 0xA6, 0x70, 0x09, 0xDC}; // ESPC3 Super Mini
 const uint8_t baseMac[6] = {0x5C, 0x01, 0x3B, 0x88, 0x04, 0x58}; // Wroom32
 uint32_t startTime;
-const uint8_t ESPNOW_CHANNEL = 1; // Must match baseReciever AP_CHANNEL
+const uint8_t ESPNOW_CHANNEL = 0; // Must match baseReciever AP_CHANNEL
 const uint8_t LATENCY_TEST_MODE = 1; // Set to 0 to disable clock-sync latency test mode.
 
 // --- Types ---------------------------------------------------------------------
