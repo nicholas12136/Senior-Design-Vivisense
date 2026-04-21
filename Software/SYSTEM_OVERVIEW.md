@@ -9,9 +9,9 @@ Vivisense is a wheelchair obstacle-awareness system for pediatric manual wheelch
 | Component | Role |
 |---|---|
 | 8× VL53L7CX | ToF sensor, 60°×60° FOV, 4×4 zone array, up to 15 Hz |
-| ESP32 (MainController) | Receives sensor data, computes proximity, drives LEDs |
+| ESP32 (MainController) | Receives sensor data, computes per-zone proximity, broadcasts ZoneProximityPacket |
 | ESP32 (CaregiverApp) | WiFi access point, browser UI, I2S audio playback |
-| ESP32 (LED Controller) | Receives LED frames, drives NeoPixel ring |
+| ESP32 (LEDRingController) | Receives ZoneProximityPacket + ConfigPacket, maps zones to LEDs, drives NeoPixel ring |
 | 93-LED NeoPixel ring | 6 concentric rings: 1, 8, 12, 16, 24, 32 LEDs |
 | MAX98357A amp | I2S digital amplifier; BCK=27, WS=26, DO=25 |
 
@@ -41,29 +41,26 @@ A closer obstacle lights an inner ring (ring 1 = danger); a farther obstacle lig
 
 ```
 Sensor Pods
-    │  ESP-NOW  SensorPacket (69 B) or SensorPacketV2 (75 B)
-    ▼
+    |  ESP-NOW  SensorPacket (69 B) or SensorPacketV2 (75 B)
+    v
 MainController ESP32
-    ├─ SensorAndPoint.h: p_world = R × p_sensor + t  (per cell)
-    ├─ Accumulate closest obstacle per zone across all 128 cells
-    ├─ Broadcast ZoneProximityPacket (34 B) every ~67 ms at 15 Hz
-    │        ↓ ESP-NOW broadcast
-    └──────────────────────────────────►  CaregiverApp ESP32
-                                              │
-                                         processZoneProximity()
-                                              │  builds LedFrame_t
-                                              │  ESP-NOW unicast (94 B)
-                                              ▼
-                                         LED Controller ESP32
-                                              │
-                                         NeoPixel ring (93 LEDs)
+    |- SensorAndPoint.h: p_world = R x p_sensor + t (per cell)
+    |- Accumulate closest obstacle per zone across all 128 cells
+    |- Broadcast ZoneProximityPacket (34 B) every ~67 ms at 15 Hz
+    |        | ESP-NOW broadcast
+    |        v
+    `------> LEDRingController ESP32
+             |- processZoneProximity()
+             |- map zone distances to LED rings/colors
+             `-> NeoPixel ring (93 LEDs)
 
 Browser (caregiver phone/tablet)
-    │  WiFi → WebSocket /ws
-    ▼
+    |  WiFi -> WebSocket /ws
+    v
 CaregiverApp ESP32
-    ├─ Audio: play voice commands via I2S → MAX98357A
-    └─ ConfigPacket (10 B) → ESP-NOW broadcast → MainController
+    |- Audio: play voice commands via I2S -> MAX98357A
+    |- ConfigPacket (10 B) -> ESP-NOW broadcast -> MainController + LEDRingController
+    `- Preview LedFrame_t (94 B, unicast) -> LEDRingController
 ```
 
 ### Alpha Path (Development / Demo Only)
@@ -101,7 +98,7 @@ p_world = R × p_sensor + t
 R = Rz(γ) × Ry(β) × Rx(α)   (extrinsic XYZ Euler)
 ```
 
-The pose for each sensor is hardcoded in `BaseReciever/src/main.cpp`:
+The pose for each sensor is hardcoded in `MainController/src/main.cpp`:
 
 ```cpp
 SensorConfig SENSOR_CONFIGS[NUM_SENSORS] = {
@@ -141,23 +138,23 @@ Zone 0 is always centered at 0° (forward). Zone numbering goes clockwise.
 
 ## LED Feedback Logic
 
-1. **MainController** accumulates the closest valid obstacle per zone across all 128 cells (8 sensors × 16 cells), using floor-plane distance `sqrt(x² + y²)`.
+1. **MainController** accumulates the closest valid obstacle per zone across all 128 cells (8 sensors x 16 cells), using floor-plane distance `sqrt(x^2 + y^2)`.
 2. Per-zone distances are broadcast in a `ZoneProximityPacket` every ~67 ms (15 Hz).
-3. **CaregiverApp** receives the packet and maps each zone's distance to a ring:
+3. **LEDRingController** receives each packet and maps every active zone to a ring:
 
 | Distance | Ring | Color |
 |---|---|---|
 | < DIST_RING1 (default 300 mm) | 1 (center) | Red |
-| 300–600 mm | 2 | Red |
-| 600–1050 mm | 3 | Orange |
-| 1050–1500 mm | 4 | Orange |
-| 1500–1950 mm | 5 | Yellow |
-| 1950–3000 mm | 6 | Yellow |
-| > 3000 mm | — | Off (no obstacle) |
+| 300-600 mm | 2 | Red |
+| 600-1050 mm | 3 | Orange |
+| 1050-1500 mm | 4 | Orange |
+| 1500-1950 mm | 5 | Yellow |
+| 1950-3000 mm | 6 | Yellow |
+| > 3000 mm | - | Off (no obstacle) |
 
-The center LED (ring 1) is omnidirectional — it lights regardless of which zone the obstacle is in.
+The center LED (ring 1) is omnidirectional - it lights regardless of which zone the obstacle is in.
 
-4. The resulting `LedFrame_t` (94 bytes: brightness + 93 color codes) is sent via ESP-NOW to the LED Controller.
+4. During UI preview mode, **CaregiverApp** sends a temporary `LedFrame_t` directly to LEDRingController and temporarily disables MainController live visual broadcast.
 
 ---
 
@@ -167,15 +164,15 @@ All devices operate on ESP-NOW channel 1.
 
 | Packet | Size | Direction | Description |
 |---|---|---|---|
-| `SensorPacket` | 69 B | Pod → MainController | One frame of 16-zone ToF data |
-| `SensorPacketV2` | 75 B | Pod → MainController | Same + sequence number + send timestamp |
-| `SyncRequestPacket` | 8 B | MainController → Pod | NTP-style clock sync request |
-| `SyncResponsePacket` | 16 B | Pod → MainController | Clock sync response (t1/t2/t3) |
-| `ZoneProximityPacket` | 34 B | MainController → CaregiverApp (broadcast) | Closest distance per zone |
-| `ConfigPacket` | 10 B | CaregiverApp → MainController (broadcast) | Zone mode + brightness + thresholds |
-| `LedFrame_t` | 94 B | CaregiverApp → LED Controller | Per-LED color codes + brightness |
+| `SensorPacket` | 69 B | Pod -> MainController | One frame of 16-zone ToF data |
+| `SensorPacketV2` | 75 B | Pod -> MainController | Same + sequence number + send timestamp |
+| `SyncRequestPacket` | 8 B | MainController -> Pod | NTP-style clock sync request |
+| `SyncResponsePacket` | 16 B | Pod -> MainController | Clock sync response (t1/t2/t3) |
+| `ZoneProximityPacket` | 34 B | MainController -> LEDRingController (broadcast) | Closest distance per zone |
+| `ConfigPacket` | 10 B | CaregiverApp -> MainController + LEDRingController (broadcast) | Zone mode + brightness + thresholds + active sectors |
+| `LedFrame_t` | 94 B | CaregiverApp -> LEDRingController (unicast) | Preview frame / manual LED override |
 
-The broadcast MAC (`FF:FF:FF:FF:FF:FF`) is used for `ZoneProximityPacket` and `ConfigPacket`. Unicast MACs are used for `LedFrame_t` (LED Controller).
+The broadcast MAC (`FF:FF:FF:FF:FF:FF`) is used for `ZoneProximityPacket` and `ConfigPacket`. Unicast MAC is used for preview `LedFrame_t`.
 
 ---
 
@@ -239,9 +236,9 @@ Requests current settings; ESP32 replies with a `status` message.
 
 | Firmware | Board | Key libraries |
 |---|---|---|
-| `BaseReciever` (MainController) | `esp32dev` | esp_now, esp_wifi |
-| `WebserverV3` (CaregiverApp) | `esp32doit-devkit-v1` | AsyncTCP, ESPAsyncWebServer, ArduinoJson, esp_now |
-| `LEDControllerV1` | `esp32doit-devkit-v1` | Adafruit NeoPixel, esp_now |
+| `MainController` | `esp32dev` | esp_now, esp_wifi |
+| `CaregiverApp` | `esp32doit-devkit-v1` | AsyncTCP, ESPAsyncWebServer, ArduinoJson, esp_now |
+| `LEDRingController` | `esp32doit-devkit-v1` | Adafruit NeoPixel, esp_now |
 | `LeftPodSender` | `esp32dev` | VL53L7CX driver, esp_now |
 | `RightPodSender` | `esp32dev` | VL53L7CX driver, esp_now |
 | `BaseSender` (tower) | `esp32dev` | VL53L7CX driver, esp_now |
@@ -250,18 +247,18 @@ Build and flash with PlatformIO (`pio run -t upload`).
 
 ### First-time MAC Setup
 
-1. Flash `LEDControllerV1`. Open Serial Monitor — it prints the device MAC.
-2. Copy that MAC into `WebserverV3/src/main.cpp` → `LED_ESP32_MAC[]`.
-3. Flash `WebserverV3`.
+1. Flash `LEDRingController`. Open Serial Monitor — it prints the device MAC.
+2. Copy that MAC into `CaregiverApp/src/main.cpp` → `LED_ESP32_MAC[]`.
+3. Flash `CaregiverApp`.
 
-The MainController (BaseReceiver) uses broadcast for proximity packets, so no MAC configuration is needed there.
+MainController and LEDRingController both receive broadcast packets, so no per-device MAC pairing is required for the live obstacle path.
 
 ---
 
 ## Known Limitations (Beta)
 
-- **Sensor poses are hardcoded** in `BaseReciever/src/main.cpp`. If the physical mount changes, edit `SENSOR_CONFIGS` and reflash.
-- **LED controller MAC is hardcoded** in `WebserverV3/src/main.cpp`. Replacing the LED controller ESP32 requires editing `LED_ESP32_MAC` and reflashing.
+- **Sensor poses are hardcoded** in `MainController/src/main.cpp`. If the physical mount changes, edit `SENSOR_CONFIGS` and reflash.
+- **LED controller MAC is hardcoded** in `CaregiverApp/src/main.cpp` for preview mode only (`LED_ESP32_MAC`). Replacing the LED controller ESP32 requires editing it and reflashing CaregiverApp.
 - **Zone assignment uses angle only** — no height filtering. An obstacle above the wheelchair (e.g., a shelf being passed under) will trigger a proximity alert.
 - **Audio clips are pre-recorded** and stored in SPIFFS. To add or replace clips, update `audio_files/`, run `python wav_to_header.py`, and re-upload the filesystem with `pio run -t uploadfs`.
 
@@ -272,7 +269,7 @@ The MainController (BaseReceiver) uses broadcast for proximity packets, so no MA
 ```
 Software/
 ├── ESP firmware/
-│   ├── BaseReciever/          ← MainController firmware
+│   ├── MainController/          ← MainController firmware
 │   │   ├── include/
 │   │   │   ├── SensorAndPoint.h   ← sensor geometry + point math
 │   │   │   └── led_frame.h        ← shared LED frame struct
@@ -280,16 +277,18 @@ Software/
 │   ├── LeftPodSender/         ← left front pod sensor firmware
 │   ├── RightPodSender/        ← right front pod sensor firmware
 │   └── BaseSender/            ← tower pod sensor firmware
-├── WebserverV3/               ← CaregiverApp firmware
+├── CaregiverApp/               ← CaregiverApp firmware
 │   ├── include/
 │   │   ├── led_frame.h        ← shared LED frame struct (duplicate)
 │   │   └── sounds.h           ← generated audio data (run wav_to_header.py)
 │   ├── src/main.cpp
 │   └── ui/                    ← browser UI source (Vite + TypeScript)
-├── LEDControllerV1/           ← LED ring driver firmware
+├── LEDRingController/           ← LED ring driver firmware
 │   ├── include/led_frame.h    ← source of truth for LedFrame_t
 │   └── src/main.cpp
 └── Visualizer/                ← PC-side development tools (Python)
     ├── serial_point_cloud_viewer.py
     └── serial_occupancy_grid_viewer.py
 ```
+
+
