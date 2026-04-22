@@ -1,174 +1,137 @@
-# Running ViviSense (Beta Self-Contained)
+# Running ViviSense Beta (Current Workflow)
 
-This guide explains exactly what to flash, configure, and start to run the current firmware stack.
+This is the updated bring-up flow for the beta architecture:
 
----
+- Sensors -> `MainController` (compute) -> `LEDRingController` (apply frame)
+- App config -> `MainController`
+- App preview frame -> `LEDRingController` (kept for comm testing)
 
-## 1. Prerequisites
-
-- Windows machine with USB access to all ESP32 boards
-- PlatformIO (VS Code extension or CLI)
-- Node.js (for CaregiverApp web UI build)
-- Known board mappings for:
-  - MainController ESP32
-  - LEDRingController ESP32
-  - CaregiverApp ESP32
-  - Sensor pod ESP32 boards (LeftPodSender, RightPodSender, BaseSender)
-
-Repo root in this guide:
-
-- `c:\Users\damon\School\Fall 2025\Senior-Design-Vivisense`
-
----
-
-## 2. Build Caregiver UI Assets
-
-CaregiverApp serves static UI files from SPIFFS, so build the UI before uploading filesystem data.
+## 1. Build Caregiver UI Assets
 
 ```powershell
-cd "c:\Users\damon\School\Fall 2025\Senior-Design-Vivisense\Software\CaregiverApp\ui"
+cd "C:\Users\damon\School\Fall 2025\Senior-Design-Vivisense\Software\CaregiverApp\ui"
 npm install
 npm run build
 ```
 
-This writes assets into:
+## 2. Flash Firmware
 
-- `Software/CaregiverApp/data`
-
----
-
-## 3. Flash LEDRingController First (to get MAC)
+### 2.1 MainController (PlatformIO)
 
 ```powershell
-cd "c:\Users\damon\School\Fall 2025\Senior-Design-Vivisense\Software\ESP firmware\LEDRingController"
+cd "C:\Users\damon\School\Fall 2025\Senior-Design-Vivisense\Software\ESP firmware\MainController"
 pio run -t upload
+```
+
+Optional monitor:
+
+```powershell
 pio device monitor -b 115200
 ```
 
-Copy the printed MAC from monitor output:
-
-- `[ESP-NOW] LED ESP32 MAC address: XX:XX:XX:XX:XX:XX`
-
-Set this MAC in:
-
-- `Software/CaregiverApp/src/main.cpp`
-- Constant: `LED_ESP32_MAC`
-
-Reflash CaregiverApp after changing it.
-
----
-
-## 4. Flash CaregiverApp
+### 2.2 CaregiverApp (PlatformIO)
 
 ```powershell
-cd "c:\Users\damon\School\Fall 2025\Senior-Design-Vivisense\Software\CaregiverApp"
+cd "C:\Users\damon\School\Fall 2025\Senior-Design-Vivisense\Software\CaregiverApp"
 pio run -t upload
 pio run -t uploadfs
 ```
 
-Optional monitor:
+### 2.3 LEDRingController (Arduino IDE)
+
+Open and upload:
+
+- `Software/ESP firmware/LEDRingController_ArduinoIDE/LEDRingController_ArduinoIDE.ino`
+
+Board/channel notes:
+
+- Keep ESP-NOW channel at `1`
+- Confirm printed LED MAC in serial monitor and keep `LED_ESP32_MAC` in `CaregiverApp/src/main.cpp` in sync
+- Keep `MAIN_CONTROLLER_MAC` in `CaregiverApp/src/main.cpp` aligned with the real MainController MAC
+
+### 2.4 Left Pod (Arduino IDE)
+
+Open and upload:
+
+- `Software/ESP firmware/LeftPodSender_ArduinoIDE/LeftPodSender_ArduinoIDE.ino`
+
+This sketch sends sensor IDs `1` and `2`.
+
+### 2.5 Right Pod (Arduino IDE)
+
+Open and upload:
+
+- `Software/ESP firmware/RightPodSender_ArduinoIDE/RightPodSender_ArduinoIDE.ino`
+
+This sketch sends sensor IDs `3` and `4`.
+
+## 3. Power-Up Order
+
+1. `LEDRingController`  
+2. `MainController`  
+3. Left and right pod senders  
+4. `CaregiverApp`  
+5. Connect phone/laptop to WiFi `ViviSense` / `ViviSense123`  
+6. Open `http://192.168.4.1`
+
+## 4. Runtime Defaults and Easy Tuning
+
+Primary default values are centralized in:
+
+- `Software/ESP firmware/MainController/include/runtime_defaults.h`
+
+Use this file for:
+
+- Default zone count (4/6/8)
+- Brightness
+- Visual enabled default
+- Stale timeout
+- Update rate
+- Polar smoothing defaults
+- Max range
+
+Live serial tuning (MainController serial monitor) still supports:
+
+- `GET`
+- `SET,zones,<4|6|8>`
+- `SET,bright,<0..64>`
+- `SET,visual,<0|1>`
+- `SET,sectors_mask,<0..255>`
+- `SET,red_mm,<value>`
+- `SET,yellow_mm,<value>`
+- `SET,stale_ms,<value>`
+- `SET,status_ms,<value>`
+- `SET,proximity_ms,<value>`
+- `SET,led_mode,<0|1>`
+- `SET,polar_rise,<1..255>`
+- `SET,polar_decay,<0..255>`
+- `SET,polar_enter,<1..255>`
+- `SET,polar_exit,<0..254>`
+
+Notes:
+
+- Detection mode is forced to polar in beta.
+- `led_mode=0` is sector-fill, `led_mode=1` is radar.
+
+## 5. Polar Demo Visualizer
+
+Run:
 
 ```powershell
-pio device monitor -b 115200
+cd "C:\Users\damon\School\Fall 2025\Senior-Design-Vivisense\Software\Visualizer"
+python serial_polar_demo_viewer.py --port COMx --baud 115200
 ```
 
-Defaults in firmware:
+What it shows:
 
-- SSID: `ViviSense`
-- Password: `ViviSense123`
-- AP IP: `192.168.4.1`
-- ESP-NOW channel: `1`
+- Left: raw polar occupancy from live point stream
+- Right: filtered polar occupancy (same data, smoothing applied)
 
----
+Adjust rings/zones/range and filter params live for demos/tuning.
 
-## 5. Flash MainController
+## 6. Quick Verification Checklist
 
-```powershell
-cd "c:\Users\damon\School\Fall 2025\Senior-Design-Vivisense\Software\ESP firmware\MainController"
-pio run -t upload
-```
-
-Optional monitor:
-
-```powershell
-pio device monitor -b 115200
-```
-
-MainController broadcasts live zone proximity packets at about 15 Hz.
-
----
-
-## 6. Flash Sensor Pod Firmware
-
-Flash all pod firmwares that are part of your hardware setup.
-
-Left pod:
-
-```powershell
-cd "c:\Users\damon\School\Fall 2025\Senior-Design-Vivisense\Software\ESP firmware\LeftPodSender"
-pio run -t upload
-```
-
-Right pod:
-
-```powershell
-cd "c:\Users\damon\School\Fall 2025\Senior-Design-Vivisense\Software\ESP firmware\RightPodSender"
-pio run -t upload
-```
-
-Tower/base sender:
-
-```powershell
-cd "c:\Users\damon\School\Fall 2025\Senior-Design-Vivisense\Software\ESP firmware\BaseSender"
-pio run -t upload
-```
-
----
-
-## 7. Power-Up Order (Recommended)
-
-1. LEDRingController
-2. MainController
-3. Sensor pods
-4. CaregiverApp
-5. Phone/tablet connects to `ViviSense` WiFi
-
-Then open:
-
-- `http://192.168.4.1`
-
-Use Feedback Config page to verify:
-
-- `visualEnabled` on
-- correct zone mode (4/6/8)
-- expected thresholds and active sectors
-
----
-
-## 8. Quick Functional Check
-
-1. In Caregiver UI, toggle `Display` preview on/off and confirm ring updates immediately.
-2. Exit preview; ring should resume live obstacle behavior.
-3. Move an obstacle in front/right/left and verify directional sector response.
-4. Trigger a navigation action and verify audio output on MAX98357A.
-
----
-
-## 9. Troubleshooting
-
-- No UI page:
-  - Re-run `npm run build` in `CaregiverApp/ui`
-  - Re-run `pio run -t uploadfs` in `CaregiverApp`
-
-- Preview works, live does not:
-  - Check MainController is powered and broadcasting
-  - Check both MainController and LEDRingController are on ESP-NOW channel 1
-  - Ensure CaregiverApp is not stuck in preview mode
-
-- No LED preview frames:
-  - Recheck `LED_ESP32_MAC` in `CaregiverApp/src/main.cpp`
-  - Reflash CaregiverApp after MAC update
-
-- Audio missing:
-  - Verify I2S wiring (BCK=27, WS=26, DO=25)
-  - Confirm amp power and speaker wiring
+1. Move obstacle ahead/right/left and verify LED response updates.
+2. Toggle sector/radar mode in app and confirm LED behavior changes.
+3. Enable preview in app and verify direct app->LED path still works.
+4. Disable preview and confirm live MainController rendering resumes.

@@ -28,7 +28,7 @@ interface AdvancedSettings {
 interface ConfigState {
   audioEnabled: boolean;
   visualEnabled: boolean;
-  selectedMode: FeedbackMode | null;
+  selectedMode: FeedbackMode;
   selectedAudioMode: AudioFeedbackMode | null;
   advanced: AdvancedSettings;
 }
@@ -47,7 +47,7 @@ function defaultState(): ConfigState {
   return {
     audioEnabled: false,
     visualEnabled: false,
-    selectedMode: null,
+    selectedMode: 'sector',
     selectedAudioMode: null,
     advanced: {
       thresholds: { redMax: 60, yellowMax: 150 },
@@ -98,6 +98,7 @@ function sendConfig(): void {
     redThreshold:    thresholds.redMax,
     yellowThreshold: thresholds.yellowMax,
     activeSectors:   activeSectorsArray,
+    renderMode:      state.selectedMode === 'radar' ? 1 : 0,
     detectionMode:   detectionMode,
     audioEnabled:    state.audioEnabled,
     visualEnabled:   state.visualEnabled,
@@ -140,6 +141,7 @@ function applyStatus(msg: Record<string, unknown>): void {
   const brightness      = msg['brightness']      as number  | undefined;
   const redThreshold    = msg['redThreshold']    as number  | undefined;
   const yellowThreshold = msg['yellowThreshold'] as number  | undefined;
+  const renderMode      = msg['renderMode']      as number  | undefined;
   const detectionMode   = msg['detectionMode']   as number  | undefined;
   const activeSectors   = msg['activeSectors']   as boolean[] | undefined;
   const audioEn         = msg['audioEnabled']    as boolean | undefined;
@@ -151,6 +153,8 @@ function applyStatus(msg: Record<string, unknown>): void {
   if (brightness      !== undefined) state.advanced.brightness           = brightness;
   if (redThreshold    !== undefined) state.advanced.thresholds.redMax    = redThreshold;
   if (yellowThreshold !== undefined) state.advanced.thresholds.yellowMax = yellowThreshold;
+  if (renderMode !== undefined && (renderMode === 0 || renderMode === 1))
+    state.selectedMode = renderMode === 1 ? 'radar' : 'sector';
   if (detectionMode !== undefined && [0, 1, 2].includes(detectionMode))
     state.advanced.detectionMode = detectionMode as DetectionMode;
   if (activeSectors   !== undefined) {
@@ -182,6 +186,9 @@ function applyStatus(msg: Record<string, unknown>): void {
 
   document.querySelectorAll<HTMLButtonElement>('.detection-mode-btn').forEach(btn => {
     btn.classList.toggle('active', Number(btn.dataset['mode']) === state.advanced.detectionMode);
+  });
+  document.querySelectorAll<HTMLElement>('.mode-card[data-mode]').forEach(card => {
+    card.classList.toggle('selected', card.dataset['mode'] === state.selectedMode);
   });
 
   // Sector count buttons + toggles (re-render if zone or sector state changed)
@@ -438,9 +445,11 @@ export function initFeedbackConfig(): void {
   document.querySelectorAll<HTMLElement>('.mode-card[data-mode]').forEach(card => {
     card.addEventListener('click', () => {
       const mode = card.dataset['mode'] as FeedbackMode;
+      if (mode === state.selectedMode) return;
       state.selectedMode = mode;
       document.querySelectorAll('.mode-card[data-mode]').forEach(c => c.classList.remove('selected'));
       card.classList.add('selected');
+      sendConfig();
     });
   });
 

@@ -2,14 +2,14 @@
  * ViviSense - LED Ring Controller ESP32
  *
  * Live path:
- *   MainController (ZoneProximityPacket) -> this controller -> NeoPixel ring
+ *   MainController (LedRenderFramePacket) -> this controller -> NeoPixel ring
  *
  * Preview path:
  *   CaregiverApp sends LedFrame_t directly to this controller for UI preview mode.
  *
  * Config path:
- *   CaregiverApp broadcasts ConfigPacket; this controller uses it for
- *   zone mode, thresholds, brightness, active sectors, and visual enable.
+ *   MainController owns obstacle processing and render decisions.
+ *   This controller only applies incoming render/preview frames.
  */
 
 #include <Arduino.h>
@@ -27,30 +27,11 @@
 #define NUM_LEDS        93
 #define ESPNOW_CHANNEL  1
 
-const uint8_t MSG_CONFIG = 0xB1;
-const uint8_t MSG_ZONE_PROXIMITY = 0xB3;
 const uint8_t MSG_COMPONENT_STATUS = 0xB4;
 const uint8_t MSG_LED_RENDER_FRAME = 0xB6;
 
 const uint8_t COMPONENT_LED_CONTROLLER = 2;
 static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-
-struct __attribute__((packed)) ConfigPacket {
-  uint8_t  msg_type;
-  uint8_t  zone_mode;          // 4, 6, or 8
-  uint8_t  brightness;         // 0-64
-  uint16_t red_threshold_mm;
-  uint16_t yellow_threshold_mm;
-  uint8_t  audio_enabled;
-  uint8_t  visual_enabled;
-  uint8_t  active_sectors;     // bit N = zone N enabled
-};
-
-struct __attribute__((packed)) ZoneProximityPacket {
-  uint8_t msg_type;
-  uint8_t num_zones;
-  float   closest_mm[8];
-};
 
 struct __attribute__((packed)) ComponentStatusPacket {
   uint8_t msg_type;
@@ -70,18 +51,9 @@ struct __attribute__((packed)) LedRenderFramePacket {
 
 Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
-int currentBrightness = 64;
-int currentZoneMode = 6;
 bool visualEnabled = true;
-bool currentActiveSectors[8] = {true, true, true, true, true, true, true, true};
 uint32_t lastHeartbeatMs = 0;
 const uint32_t HEARTBEAT_PERIOD_MS = 1000;
-
-float DIST_RING1 = 300.0f;
-float DIST_RING2 = 600.0f;
-float DIST_RING3 = 1050.0f;
-float DIST_RING4 = 1500.0f;
-float DIST_RING5 = 1950.0f;
 
 // Ring 1 (center)
 int ring1_any[] = {92, -1};
@@ -214,25 +186,11 @@ static uint32_t resolveColor(uint8_t code, uint8_t brightness) {
   }
 }
 
-static uint8_t ringToColorCode(int ring) {
-  if (ring <= 2) return LED_COLOR_RED;
-  if (ring <= 4) return LED_COLOR_ORANGE;
-  return LED_COLOR_YELLOW;
-}
-
 static void fillZoneInFrame(LedFrame_t& frame, int* ledArray, uint8_t colorCode) {
   for (int i = 0; ledArray[i] != -1; i++) {
     int led = ledArray[i];
     if (led >= 0 && led < NUM_LEDS) frame.leds[led] = colorCode;
   }
-}
-
-static void applyThresholds(float redMaxMm, float yellowMaxMm) {
-  DIST_RING1 = redMaxMm * 0.5f;
-  DIST_RING2 = redMaxMm;
-  DIST_RING3 = redMaxMm + (yellowMaxMm - redMaxMm) * 0.5f;
-  DIST_RING4 = yellowMaxMm;
-  DIST_RING5 = yellowMaxMm + (yellowMaxMm - redMaxMm) * 0.5f;
 }
 
 static void applyFrame(const LedFrame_t& frame) {
@@ -243,12 +201,6 @@ static void applyFrame(const LedFrame_t& frame) {
     }
   }
   strip.show();
-}
-
-static void clearRing() {
-  LedFrame_t frame = {};
-  frame.brightness = (uint8_t)currentBrightness;
-  applyFrame(frame);
 }
 
 int* getZone4(int ring, float angleDeg) {
@@ -356,44 +308,9 @@ static int* getZoneByIndex(int numZones, int ring, int zoneIdx) {
   return getZone6(ring, kZone6Angles[zoneIdx]);
 }
 
-static void processZoneProximity(const ZoneProximityPacket& pkt) {
-  if (!visualEnabled) return;
-
-  int numZones = (int)pkt.num_zones;
-  if (numZones != 4 && numZones != 6 && numZones != 8) return;
-
-  const float* zoneAngles = (numZones == 4) ? kZone4Angles :
-                            (numZones == 8) ? kZone8Angles : kZone6Angles;
-
-  LedFrame_t frame = {};
-  frame.brightness = (uint8_t)currentBrightness;
-
-  for (int z = 0; z < numZones; z++) {
-    float dist = pkt.closest_mm[z];
-    if (dist >= 3000.0f) continue;
-    if (!currentActiveSectors[z]) continue;
-
-    int ring;
-    if      (dist < DIST_RING1) ring = 1;
-    else if (dist < DIST_RING2) ring = 2;
-    else if (dist < DIST_RING3) ring = 3;
-    else if (dist < DIST_RING4) ring = 4;
-    else if (dist < DIST_RING5) ring = 5;
-    else                        ring = 6;
-
-    uint8_t color = ringToColorCode(ring);
-    // Sector mode should fill the full sector (rings 2..6) using the
-    // closest obstacle's color, not only a single ring band.
-    for (int drawRing = 2; drawRing <= 6; drawRing++) {
-      int* leds;
-      if (numZones == 4)      leds = getZone4(drawRing, zoneAngles[z]);
-      else if (numZones == 8) leds = getZone8(drawRing, zoneAngles[z]);
-      else                    leds = getZone6(drawRing, zoneAngles[z]);
-      fillZoneInFrame(frame, leds, color);
-    }
-  }
-
-  applyFrame(frame);
+static int mapZoneIndexForPhysicalOrientation(int zoneIdx, int numZones) {
+  (void)numZones;
+  return zoneIdx;
 }
 
 static void processLedRenderFrame(const LedRenderFramePacket& pkt) {
@@ -410,11 +327,11 @@ static void processLedRenderFrame(const LedRenderFramePacket& pkt) {
   }
 
   for (int z = 0; z < numZones; z++) {
-    if (!currentActiveSectors[z]) continue;
+    int mappedZone = mapZoneIndexForPhysicalOrientation(z, numZones);
     for (int ring = 2; ring <= 6; ring++) {
       uint8_t color = pkt.ring_zone_colors[ring - 1][z];
       if (color == LED_COLOR_OFF) continue;
-      int* leds = getZoneByIndex(numZones, ring, z);
+      int* leds = getZoneByIndex(numZones, ring, mappedZone);
       fillZoneInFrame(frame, leds, color);
     }
   }
@@ -422,51 +339,8 @@ static void processLedRenderFrame(const LedRenderFramePacket& pkt) {
   applyFrame(frame);
 }
 
-static void applyConfig(const ConfigPacket& cfg) {
-  if (cfg.zone_mode == 4 || cfg.zone_mode == 6 || cfg.zone_mode == 8) {
-    currentZoneMode = cfg.zone_mode;
-  }
-
-  currentBrightness = constrain((int)cfg.brightness, 0, 64);
-  visualEnabled = (cfg.visual_enabled != 0);
-
-  for (int i = 0; i < 8; i++) {
-    currentActiveSectors[i] = ((cfg.active_sectors >> i) & 0x01) != 0;
-  }
-
-  if (cfg.red_threshold_mm > 0 && cfg.yellow_threshold_mm > cfg.red_threshold_mm) {
-    applyThresholds((float)cfg.red_threshold_mm, (float)cfg.yellow_threshold_mm);
-  }
-
-  if (!visualEnabled) {
-    clearRing();
-  }
-
-  Serial.printf("[Config] zones=%d bright=%d visual=%s sectors=0x%02X\n",
-                currentZoneMode,
-                currentBrightness,
-                visualEnabled ? "on" : "off",
-                cfg.active_sectors);
-}
-
 static void handleEspNowPayload(const uint8_t* mac, const uint8_t* data, int len) {
   (void)mac;
-
-  if (len == (int)sizeof(ConfigPacket)) {
-    const ConfigPacket* cfg = reinterpret_cast<const ConfigPacket*>(data);
-    if (cfg->msg_type == MSG_CONFIG) {
-      applyConfig(*cfg);
-    }
-    return;
-  }
-
-  if (len == (int)sizeof(ZoneProximityPacket)) {
-    const ZoneProximityPacket* pkt = reinterpret_cast<const ZoneProximityPacket*>(data);
-    if (pkt->msg_type == MSG_ZONE_PROXIMITY) {
-      processZoneProximity(*pkt);
-    }
-    return;
-  }
 
   if (len == (int)sizeof(LedRenderFramePacket)) {
     const LedRenderFramePacket* pkt = reinterpret_cast<const LedRenderFramePacket*>(data);
@@ -538,7 +412,7 @@ void setup() {
     }
   }
 
-  Serial.println("[ESP-NOW] Ready - waiting for zone/render/config/preview packets");
+  Serial.println("[ESP-NOW] Ready - waiting for render/preview packets");
 }
 
 void loop() {

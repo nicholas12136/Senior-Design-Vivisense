@@ -50,9 +50,9 @@
 #define ESPNOW_CHANNEL  1   // must match the LED ESP32's channel
 
 static uint8_t LED_ESP32_MAC[] = {0x88, 0x56, 0xA6 , 0x6D , 0x0E , 0x8C};
+static uint8_t MAIN_CONTROLLER_MAC[] = {0x5C, 0x01, 0x3B, 0x88, 0x04, 0x58};
 
-// Broadcast MAC used to send ConfigPackets to MainController.
-// MainController receives them via its own broadcast peer registration.
+// Broadcast MAC is still used for receiving heartbeat/status packets.
 static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 // ── Beta: inter-ESP32 packet types ────────────────────────────────────────────
@@ -63,9 +63,10 @@ const uint8_t MSG_DETECTION_MODE   = 0xB5;
 
 const uint8_t COMPONENT_MAIN_CONTROLLER = 1;
 const uint8_t COMPONENT_LED_CONTROLLER  = 2;
-const uint8_t DETECTION_MODE_DIRECT = 0;
-const uint8_t DETECTION_MODE_CARTESIAN_GRID = 1;
 const uint8_t DETECTION_MODE_POLAR_GRID = 2;
+const uint8_t LED_RENDER_MODE_SECTOR_FILL = 0;
+const uint8_t LED_RENDER_MODE_RADAR = 1;
+const bool ENABLE_NAV_AUDIO_PLAYBACK = false;
 
 struct __attribute__((packed)) ConfigPacket {
   uint8_t  msg_type;           // MSG_CONFIG
@@ -75,8 +76,9 @@ struct __attribute__((packed)) ConfigPacket {
   uint16_t yellow_threshold_mm;
   uint8_t  audio_enabled;
   uint8_t  visual_enabled;
+  uint8_t  render_mode;
   uint8_t  active_sectors;     // bitmask — bit N = zone N enabled
-};                             // 10 bytes
+};                             // 11 bytes
 
 struct __attribute__((packed)) ZoneProximityPacket {
   uint8_t msg_type;
@@ -93,7 +95,7 @@ struct __attribute__((packed)) ComponentStatusPacket {
 
 struct __attribute__((packed)) DetectionModePacket {
   uint8_t msg_type;
-  uint8_t mode; // 0=direct, 1=cartesian, 2=polar
+  uint8_t mode; // 2=polar
 };                        // 2 bytes
 
 #define I2S_BCK_IO  27
@@ -120,6 +122,7 @@ bool  previewActiveSectors[8]  = {true,true,true,true,true,true,false,false};
 bool  currentActiveSectors[8] = {true,true,true,true,true,true,true,true};
 uint8_t latestSensorSeenMask = 0;
 uint8_t currentDetectionMode = DETECTION_MODE_POLAR_GRID;
+uint8_t currentRenderMode = LED_RENDER_MODE_SECTOR_FILL;
 uint8_t lastMainDetectionMode = DETECTION_MODE_POLAR_GRID;
 uint32_t lastMainControllerStatusMs = 0;
 uint32_t lastLedControllerStatusMs = 0;
@@ -364,10 +367,11 @@ void sendConfigToMainController(int overrideVisualEnabled = -1)
   cfg.visual_enabled      = (overrideVisualEnabled >= 0)
                               ? (uint8_t)(overrideVisualEnabled ? 1 : 0)
                               : (uint8_t)(visualEnabled ? 1 : 0);
+  cfg.render_mode         = (uint8_t)currentRenderMode;
   cfg.active_sectors      = 0;
   for (int i = 0; i < currentZoneMode; i++)
     if (currentActiveSectors[i]) cfg.active_sectors |= (uint8_t)(1 << i);
-  esp_err_t err = esp_now_send(BROADCAST_MAC, (const uint8_t *)&cfg, sizeof(cfg));
+  esp_err_t err = esp_now_send(MAIN_CONTROLLER_MAC, (const uint8_t *)&cfg, sizeof(cfg));
   if (err != ESP_OK) Serial.printf("[ESP-NOW] Config send error: 0x%x\n", err);
 }
 
@@ -375,8 +379,9 @@ void sendDetectionModeToMainController()
 {
   DetectionModePacket pkt = {};
   pkt.msg_type = MSG_DETECTION_MODE;
-  pkt.mode = currentDetectionMode;
-  esp_err_t err = esp_now_send(BROADCAST_MAC, reinterpret_cast<const uint8_t*>(&pkt), sizeof(pkt));
+  pkt.mode = DETECTION_MODE_POLAR_GRID;
+  currentDetectionMode = DETECTION_MODE_POLAR_GRID;
+  esp_err_t err = esp_now_send(MAIN_CONTROLLER_MAC, reinterpret_cast<const uint8_t*>(&pkt), sizeof(pkt));
   if (err != ESP_OK) Serial.printf("[ESP-NOW] Detection mode send error: 0x%x\n", err);
 }
 
@@ -408,6 +413,7 @@ static void onEspNowSent(const uint8_t* mac, esp_now_send_status_t status) {
   const char* target = "OTHER";
   if (mac != nullptr) {
     if (memcmp(mac, LED_ESP32_MAC, 6) == 0) target = "LED";
+    else if (memcmp(mac, MAIN_CONTROLLER_MAC, 6) == 0) target = "MAIN";
     else if (memcmp(mac, BROADCAST_MAC, 6) == 0) target = "BROADCAST";
     Serial.printf("[ESP-NOW] %s send %s (%02X:%02X:%02X:%02X:%02X:%02X)\n",
                   target,
@@ -428,8 +434,8 @@ void initEspNow() {
   esp_now_register_send_cb(onEspNowSent);
   esp_now_register_recv_cb(onEspNowReceived);
 
-  // Live proximity rendering now runs on LEDRingController directly.
-  // This unit only transmits ConfigPacket + preview LedFrame_t.
+  // Live proximity rendering runs from MainController -> LEDRingController.
+  // This unit transmits config to MainController and preview frames to LED.
 
   // LED controller peer (unicast — LED frames for normal operation + preview)
   {
@@ -444,7 +450,20 @@ void initEspNow() {
       Serial.println("[ESP-NOW] LED peer registered");
   }
 
-  // Broadcast peer — used to send ConfigPackets to MainController
+  // MainController peer (unicast) - config + mode control.
+  {
+    esp_now_peer_info_t mainPeer = {};
+    memcpy(mainPeer.peer_addr, MAIN_CONTROLLER_MAC, 6);
+    mainPeer.channel = ESPNOW_CHANNEL;
+    mainPeer.ifidx   = WIFI_IF_AP;
+    mainPeer.encrypt = false;
+    if (esp_now_add_peer(&mainPeer) != ESP_OK)
+      Serial.println("[ESP-NOW] MainController peer FAILED");
+    else
+      Serial.println("[ESP-NOW] MainController peer registered");
+  }
+
+  // Broadcast peer for compatibility with received status traffic.
   {
     esp_now_peer_info_t broadcastPeer = {};
     memcpy(broadcastPeer.peer_addr, BROADCAST_MAC, 6);
@@ -454,7 +473,7 @@ void initEspNow() {
     if (esp_now_add_peer(&broadcastPeer) != ESP_OK)
       Serial.println("[ESP-NOW] Broadcast peer FAILED");
     else
-      Serial.println("[ESP-NOW] Broadcast peer registered (ConfigPacket channel)");
+      Serial.println("[ESP-NOW] Broadcast peer registered");
   }
 }
 
@@ -727,6 +746,13 @@ void setupI2S() {
 }
 
 void playAudio(const unsigned char* audioData, unsigned int dataLen, unsigned int sampleRate) {
+  if (!ENABLE_NAV_AUDIO_PLAYBACK) {
+    (void)audioData;
+    (void)dataLen;
+    (void)sampleRate;
+    Serial.println("[Audio] Navigation playback disabled in beta firmware");
+    return;
+  }
   if (dataLen == 0) return;
   i2s_set_sample_rates(I2S_PORT, sampleRate);
 
@@ -808,11 +834,16 @@ void handleWebSocketMessage(const char* msg) {
       if (visualEnabled && !newVis) { sendClearFrame(); }
       visualEnabled = newVis;
     }
-    if (!doc["detectionMode"].isNull()) {
-      int mode = doc["detectionMode"].as<int>();
-      if (mode >= DETECTION_MODE_DIRECT && mode <= DETECTION_MODE_POLAR_GRID) {
-        currentDetectionMode = (uint8_t)mode;
+    if (!doc["renderMode"].isNull()) {
+      int mode = doc["renderMode"].as<int>();
+      if (mode == LED_RENDER_MODE_SECTOR_FILL || mode == LED_RENDER_MODE_RADAR) {
+        currentRenderMode = (uint8_t)mode;
       }
+    }
+    if (!doc["detectionMode"].isNull()) {
+      // UI value is accepted for compatibility but runtime is polar-only.
+      (void)doc["detectionMode"].as<int>();
+      currentDetectionMode = DETECTION_MODE_POLAR_GRID;
     }
     Serial.printf("[Config] zoneMode=%d  brightness=%d%%  audio=%s  visual=%s\n",
                   currentZoneMode, (int)(currentBrightness / 0.64f),
@@ -916,6 +947,7 @@ void sendStatus(AsyncWebSocketClient* client) {
   doc["yellowThreshold"]= (int)(DIST_RING4 / 10.0f);
   doc["audioEnabled"]   = audioEnabled;
   doc["visualEnabled"]  = visualEnabled;
+  doc["renderMode"]     = (int)currentRenderMode;
   doc["detectionMode"]  = (int)detectionModeForUi;
   doc["mainControllerConnected"] = mainControllerConnected;
   doc["ledControllerConnected"] = ledControllerConnected;
@@ -1012,7 +1044,7 @@ void setup() {
   // Sync default settings to MainController on boot
   sendConfigToMainController();
   sendDetectionModeToMainController();
-  Serial.println("[Config] Initial settings broadcast to MainController");
+  Serial.println("[Config] Initial settings sent to MainController");
 }
 
 void loop() {
@@ -1026,3 +1058,4 @@ void loop() {
   }
 
 }
+

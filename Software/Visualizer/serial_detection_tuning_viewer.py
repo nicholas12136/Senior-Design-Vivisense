@@ -65,6 +65,22 @@ def parse_float(text: str, fallback: float) -> float:
         return fallback
 
 
+def parse_status_filter(text: str):
+    txt = text.strip()
+    if not txt:
+        return None
+    values = set()
+    for token in txt.replace(";", ",").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            values.add(int(token))
+        except ValueError:
+            continue
+    return values if values else None
+
+
 def polar_zone_index(angle_deg: float, zones: int) -> int:
     step = 360.0 / float(zones)
     idx = int(math.floor((angle_deg + 180.0) / step))
@@ -264,11 +280,20 @@ class App:
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=8)
         ttk.Label(left, text="Global").pack(anchor="w")
 
-        self.filter_period_ms_var = tk.StringVar(value="67")
+        self.filter_period_ms_var = tk.StringVar(value="33")
         grow = ttk.Frame(left)
         grow.pack(anchor="w")
         ttk.Label(grow, text="Filter step period (ms)", width=28).pack(side=tk.LEFT)
         ttk.Entry(grow, textvariable=self.filter_period_ms_var, width=10).pack(side=tk.LEFT)
+
+        self.status_filter_var = tk.StringVar(value="5")
+        srow = ttk.Frame(left)
+        srow.pack(anchor="w")
+        ttk.Label(srow, text="Filtered status list", width=28).pack(side=tk.LEFT)
+        s_entry = ttk.Entry(srow, textvariable=self.status_filter_var, width=10)
+        s_entry.pack(side=tk.LEFT)
+        ttk.Label(left, text="Blank = all, e.g. 5 or 5,9,13").pack(anchor="w")
+        s_entry.bind("<KeyRelease>", lambda _e: self.reset_filter_state())
 
         self.show_invalid_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -315,10 +340,10 @@ class App:
         self._labeled_entry(parent, "Cell size (m)", self.cart_cell_var)
 
         ttk.Label(parent, text="Cartesian Filter").pack(anchor="w", pady=(8, 0))
-        self.occ_rise_var = tk.StringVar(value="90")
-        self.occ_decay_var = tk.StringVar(value="24")
+        self.occ_rise_var = tk.StringVar(value="140")
+        self.occ_decay_var = tk.StringVar(value="36")
         self.occ_enter_var = tk.StringVar(value="120")
-        self.occ_exit_var = tk.StringVar(value="80")
+        self.occ_exit_var = tk.StringVar(value="70")
         self._labeled_entry(parent, "occ_rise", self.occ_rise_var)
         self._labeled_entry(parent, "occ_decay", self.occ_decay_var)
         self._labeled_entry(parent, "occ_enter", self.occ_enter_var)
@@ -334,10 +359,10 @@ class App:
         self._labeled_entry(parent, "Max range (m)", self.polar_max_range_var)
 
         ttk.Label(parent, text="Polar Filter").pack(anchor="w", pady=(8, 0))
-        self.polar_rise_var = tk.StringVar(value="90")
-        self.polar_decay_var = tk.StringVar(value="24")
+        self.polar_rise_var = tk.StringVar(value="140")
+        self.polar_decay_var = tk.StringVar(value="36")
         self.polar_enter_var = tk.StringVar(value="120")
-        self.polar_exit_var = tk.StringVar(value="80")
+        self.polar_exit_var = tk.StringVar(value="70")
         self._labeled_entry(parent, "polar_rise", self.polar_rise_var)
         self._labeled_entry(parent, "polar_decay", self.polar_decay_var)
         self._labeled_entry(parent, "polar_enter", self.polar_enter_var)
@@ -442,10 +467,10 @@ class App:
         }
 
     def _parse_cart_filter_params(self):
-        rise = clamp_int(parse_int(self.occ_rise_var.get(), 90), 1, 255)
-        decay = clamp_int(parse_int(self.occ_decay_var.get(), 24), 0, 255)
+        rise = clamp_int(parse_int(self.occ_rise_var.get(), 140), 1, 255)
+        decay = clamp_int(parse_int(self.occ_decay_var.get(), 36), 0, 255)
         enter = clamp_int(parse_int(self.occ_enter_var.get(), 120), 1, 255)
-        exit_ = clamp_int(parse_int(self.occ_exit_var.get(), 80), 0, 254)
+        exit_ = clamp_int(parse_int(self.occ_exit_var.get(), 70), 0, 254)
         if exit_ >= enter:
             exit_ = enter - 1
         return rise, decay, enter, exit_
@@ -457,16 +482,16 @@ class App:
         return {"rings": rings, "zones": zones, "max_range_m": max_range_m}
 
     def _parse_polar_filter_params(self):
-        rise = clamp_int(parse_int(self.polar_rise_var.get(), 90), 1, 255)
-        decay = clamp_int(parse_int(self.polar_decay_var.get(), 24), 0, 255)
+        rise = clamp_int(parse_int(self.polar_rise_var.get(), 140), 1, 255)
+        decay = clamp_int(parse_int(self.polar_decay_var.get(), 36), 0, 255)
         enter = clamp_int(parse_int(self.polar_enter_var.get(), 120), 1, 255)
-        exit_ = clamp_int(parse_int(self.polar_exit_var.get(), 80), 0, 254)
+        exit_ = clamp_int(parse_int(self.polar_exit_var.get(), 70), 0, 254)
         if exit_ >= enter:
             exit_ = enter - 1
         return rise, decay, enter, exit_
 
     def _parse_filter_period_s(self):
-        ms = clamp_int(parse_int(self.filter_period_ms_var.get(), 67), 20, 2000)
+        ms = clamp_int(parse_int(self.filter_period_ms_var.get(), 33), 20, 2000)
         return ms / 1000.0
 
     def _ensure_grids(self, force_reset=False):
@@ -598,6 +623,7 @@ class App:
 
     def _step_filters_if_due(self, rows):
         cart, polar = self._ensure_grids(force_reset=False)
+        filtered_rows = self._rows_for_filtered(rows)
         now = time.time()
         period_s = self._parse_filter_period_s()
         if (now - self.last_filter_step_s) < period_s:
@@ -605,15 +631,22 @@ class App:
 
         steps = 0
         while (now - self.last_filter_step_s) >= period_s and steps < 8:
-            self._step_cartesian_filter(rows, cart)
-            self._step_polar_filter(rows, polar)
+            self._step_cartesian_filter(rows, filtered_rows, cart)
+            self._step_polar_filter(rows, filtered_rows, polar)
             self.last_filter_step_s += period_s
             steps += 1
         if (now - self.last_filter_step_s) >= period_s:
             self.last_filter_step_s = now
 
-    def _step_cartesian_filter(self, rows, cart):
+    def _rows_for_filtered(self, rows):
+        statuses = parse_status_filter(self.status_filter_var.get())
+        if statuses is None:
+            return rows
+        return [r for r in rows if r[6] in statuses]
+
+    def _step_cartesian_filter(self, rows_raw, rows_filtered, cart):
         rise, decay, enter, exit_ = self._parse_cart_filter_params()
+        raw_owner_hits = np.zeros((cart["rows"], cart["cols"]), dtype=np.uint8)
         hit = np.zeros((cart["rows"], cart["cols"]), dtype=np.uint8)
         owner_hits = np.zeros((cart["rows"], cart["cols"]), dtype=np.uint8)
 
@@ -623,7 +656,19 @@ class App:
         y_max_mm = cart["y_max_m"] * 1000.0
         cell_mm = cart["cell_m"] * 1000.0
 
-        for sid, _cell, _valid, x_m, y_m, _z_m, _status in rows:
+        for sid, _cell, _valid, x_m, y_m, _z_m, _status in rows_raw:
+            x_mm = x_m * 1000.0
+            y_mm = y_m * 1000.0
+            if x_mm < x_min_mm or x_mm >= x_max_mm or y_mm < y_min_mm or y_mm >= y_max_mm:
+                continue
+            col = int((x_mm - x_min_mm) / cell_mm)
+            row = int((y_mm - y_min_mm) / cell_mm)
+            if row < 0 or row >= cart["rows"] or col < 0 or col >= cart["cols"]:
+                continue
+            if raw_owner_hits[row, col] == 0:
+                raw_owner_hits[row, col] = sid
+
+        for sid, _cell, _valid, x_m, y_m, _z_m, _status in rows_filtered:
             x_mm = x_m * 1000.0
             y_mm = y_m * 1000.0
             if x_mm < x_min_mm or x_mm >= x_max_mm or y_mm < y_min_mm or y_mm >= y_max_mm:
@@ -636,7 +681,7 @@ class App:
             if owner_hits[row, col] == 0:
                 owner_hits[row, col] = sid
 
-        self.raw_cart_owner = owner_hits.copy()
+        self.raw_cart_owner = raw_owner_hits.copy()
 
         conf = self.cart_conf.astype(np.int16)
         conf[hit > 0] = np.minimum(conf[hit > 0] + rise, 255)
@@ -650,16 +695,33 @@ class App:
         self.cart_occ[exit_mask] = 0
         self.cart_owner[exit_mask] = 0
 
-    def _step_polar_filter(self, rows, polar):
+    def _step_polar_filter(self, rows_raw, rows_filtered, polar):
         rise, decay, enter, exit_ = self._parse_polar_filter_params()
         rings = polar["rings"]
         zones = polar["zones"]
         max_range_mm = polar["max_range_m"] * 1000.0
 
+        raw_owner_hits = np.zeros((rings, zones), dtype=np.uint8)
         hit = np.zeros((rings, zones), dtype=np.uint8)
         owner_hits = np.zeros((rings, zones), dtype=np.uint8)
 
-        for sid, _cell, _valid, x_m, y_m, _z_m, _status in rows:
+        for sid, _cell, _valid, x_m, y_m, _z_m, _status in rows_raw:
+            x_mm = x_m * 1000.0
+            y_mm = y_m * 1000.0
+            dist = math.sqrt((x_mm * x_mm) + (y_mm * y_mm))
+            if dist > max_range_mm:
+                continue
+            angle_deg = math.degrees(math.atan2(-y_mm, x_mm))
+            zone = polar_zone_index(angle_deg, zones)
+            ring = int((dist / max_range_mm) * rings)
+            if ring >= rings:
+                ring = rings - 1
+            if ring < 0 or zone < 0:
+                continue
+            if raw_owner_hits[ring, zone] == 0:
+                raw_owner_hits[ring, zone] = sid
+
+        for sid, _cell, _valid, x_m, y_m, _z_m, _status in rows_filtered:
             x_mm = x_m * 1000.0
             y_mm = y_m * 1000.0
             dist = math.sqrt((x_mm * x_mm) + (y_mm * y_mm))
@@ -676,7 +738,7 @@ class App:
             if owner_hits[ring, zone] == 0:
                 owner_hits[ring, zone] = sid
 
-        self.raw_polar_owner = owner_hits.copy()
+        self.raw_polar_owner = raw_owner_hits.copy()
 
         conf = self.polar_conf.astype(np.int16)
         conf[hit > 0] = np.minimum(conf[hit > 0] + rise, 255)
@@ -741,9 +803,11 @@ class App:
         self.ax_left.grid(True, alpha=0.2)
         self.ax_right.grid(True, alpha=0.2)
 
+        filt_status = self.status_filter_var.get().strip() or "all"
         self.summary_var.set(
             f"Cartesian  points={len(rows)}  grid={cart['rows']}x{cart['cols']}  "
-            f"raw_cells={(self.raw_cart_owner > 0).sum()}  filtered_cells={(self.cart_occ > 0).sum()}"
+            f"raw_cells={(self.raw_cart_owner > 0).sum()}  filtered_cells={(self.cart_occ > 0).sum()}  "
+            f"status_filter={filt_status}"
         )
 
     def _draw_single_polar_panel(self, ax, owner_grid, title, polar):
@@ -880,9 +944,11 @@ class App:
         self._draw_single_polar_panel(self.ax_left, raw, "Raw Polar Occupancy (All Points)", polar)
         self._draw_single_polar_panel(self.ax_right, filt, "Filtered Polar Occupancy", polar)
 
+        filt_status = self.status_filter_var.get().strip() or "all"
         self.summary_var.set(
             f"Polar  points={len(rows)}  grid={polar['rings']}x{polar['zones']}  "
-            f"raw_bins={(raw > 0).sum()}  filtered_bins={(filt > 0).sum()}"
+            f"raw_bins={(raw > 0).sum()}  filtered_bins={(filt > 0).sum()}  "
+            f"status_filter={filt_status}"
         )
 
     def _draw(self):
