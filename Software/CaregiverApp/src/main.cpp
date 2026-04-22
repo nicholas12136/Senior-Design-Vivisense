@@ -20,12 +20,12 @@
  * WebSocket protocol (browser → ESP32):
  *   {"type":"obstacle",  "x":200,  "y":-760}
  *   {"type":"config",    "zoneMode":6, "brightness":80,
- *                        "redThreshold":60, "yellowThreshold":150,
+ *                        "redThreshold":60, "orangeThreshold":105, "yellowThreshold":150,
  *                        "activeSectors":[true,true,true,true,true,true]}   (cm)
  *   {"type":"navigate",  "action":"forward|backward|left|right|stop|speedup|slowdown|speak"}
  *   {"type":"volume",    "level":200}   (0–255)
  *   {"type":"preview",   "active":true, "zoneMode":6, "brightness":80,
- *                        "redThreshold":60, "yellowThreshold":150,
+ *                        "redThreshold":60, "orangeThreshold":105, "yellowThreshold":150,
  *                        "activeSectors":[true,true,true,true,true,true]}
  *   {"type":"preview",   "active":false}   → clears ring, resumes obstacle detection
  *
@@ -57,7 +57,6 @@ static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 // ── Beta: inter-ESP32 packet types ────────────────────────────────────────────
 const uint8_t MSG_CONFIG           = 0xB1;
-const uint8_t MSG_ZONE_PROXIMITY   = 0xB3;
 const uint8_t MSG_COMPONENT_STATUS = 0xB4;
 const uint8_t MSG_DETECTION_MODE   = 0xB5;
 
@@ -73,18 +72,13 @@ struct __attribute__((packed)) ConfigPacket {
   uint8_t  zone_mode;          // 4, 6, or 8
   uint8_t  brightness;         // 0–64
   uint16_t red_threshold_mm;
+  uint16_t orange_threshold_mm;
   uint16_t yellow_threshold_mm;
   uint8_t  audio_enabled;
   uint8_t  visual_enabled;
   uint8_t  render_mode;
   uint8_t  active_sectors;     // bitmask — bit N = zone N enabled
-};                             // 11 bytes
-
-struct __attribute__((packed)) ZoneProximityPacket {
-  uint8_t msg_type;
-  uint8_t num_zones;
-  float   closest_mm[8]; // 1e9 = no obstacle in zone
-};                        // 34 bytes
+};                             // 13 bytes
 
 struct __attribute__((packed)) ComponentStatusPacket {
   uint8_t msg_type;
@@ -117,6 +111,7 @@ bool  previewMode           = false;
 int   previewZoneMode       = 6;
 int   previewBrightness     = 64;
 float previewRedMm          = 600.0f;
+float previewOrangeMm       = 1050.0f;
 float previewYellowMm       = 1500.0f;
 bool  previewActiveSectors[8]  = {true,true,true,true,true,true,false,false};
 bool  currentActiveSectors[8] = {true,true,true,true,true,true,true,true};
@@ -257,63 +252,7 @@ int *getZone4(int ring, float angleDeg);
 int *getZone6(int ring, float angleDeg);
 int *getZone8(int ring, float angleDeg);
 
-// ── Beta: incoming ZoneProximityPacket from MainController ────────────────────
-
-// Representative angles for each zone index, used to select LED arrays.
-// Matches the ZONE*_ANGLES arrays from the preview section below.
-static const float kZone4Angles[] = {0.0f, 90.0f, 180.0f, -90.0f};
-static const float kZone6Angles[] = {0.0f, 60.0f, 120.0f, 180.0f, -120.0f, -60.0f};
-static const float kZone8Angles[] = {0.0f, 45.0f, 90.0f, 135.0f, 180.0f, -135.0f, -90.0f, -45.0f};
-
-// Builds and sends one LED frame from per-zone closest distances received from
-// MainController. Reuses all existing zone arrays and color logic.
-void processZoneProximity(const ZoneProximityPacket &pkt)
-{
-  if (previewMode)    return;
-  if (!visualEnabled) return;
-
-  int numZones = (int)pkt.num_zones;
-  if (numZones != 4 && numZones != 6 && numZones != 8) return;
-
-  const float *zoneAngles = (numZones == 4) ? kZone4Angles :
-                            (numZones == 8) ? kZone8Angles : kZone6Angles;
-
-  LedFrame_t frame = {};
-  frame.brightness = (uint8_t)currentBrightness;
-
-  for (int z = 0; z < numZones; z++)
-  {
-    float dist = pkt.closest_mm[z];
-    if (dist >= 3000.0f) continue;
-    if (!currentActiveSectors[z]) continue;
-
-    int ring;
-    if      (dist < DIST_RING1) ring = 1;
-    else if (dist < DIST_RING2) ring = 2;
-    else if (dist < DIST_RING3) ring = 3;
-    else if (dist < DIST_RING4) ring = 4;
-    else if (dist < DIST_RING5) ring = 5;
-    else                        ring = 6;
-
-    uint8_t color = ringToColorCode(ring);
-
-    if (ring == 1)
-    {
-      frame.leds[92] = color; // center LED is omnidirectional
-    }
-    else
-    {
-      int *leds;
-      if (numZones == 4)      leds = getZone4(ring, zoneAngles[z]);
-      else if (numZones == 8) leds = getZone8(ring, zoneAngles[z]);
-      else                    leds = getZone6(ring, zoneAngles[z]);
-      fillZoneInFrame(frame, leds, color);
-    }
-  }
-  sendLedFrame(frame);
-}
-
-// ESP-NOW receive callback — handles ZoneProximityPackets from MainController.
+// ESP-NOW receive callback.
 void onEspNowReceived(const uint8_t *mac, const uint8_t *data, int len)
 {
   (void)mac;
@@ -341,16 +280,6 @@ void onEspNowReceived(const uint8_t *mac, const uint8_t *data, int len)
     return;
   }
 
-  if (len == (int)sizeof(ZoneProximityPacket))
-  {
-    const ZoneProximityPacket *pkt =
-        reinterpret_cast<const ZoneProximityPacket *>(data);
-    if (pkt->msg_type == MSG_ZONE_PROXIMITY)
-    {
-      lastMainControllerStatusMs = millis();
-    }
-    return;
-  }
 }
 
 // Sends current settings to MainController.
@@ -362,6 +291,7 @@ void sendConfigToMainController(int overrideVisualEnabled = -1)
   cfg.zone_mode           = (uint8_t)currentZoneMode;
   cfg.brightness          = (uint8_t)currentBrightness;
   cfg.red_threshold_mm    = (uint16_t)DIST_RING2;
+  cfg.orange_threshold_mm = (uint16_t)DIST_RING3;
   cfg.yellow_threshold_mm = (uint16_t)DIST_RING4;
   cfg.audio_enabled       = audioEnabled ? 1 : 0;
   cfg.visual_enabled      = (overrideVisualEnabled >= 0)
@@ -477,15 +407,16 @@ void initEspNow() {
   }
 }
 
-// Recalculate all ring boundaries from the two color-transition thresholds.
-// redMaxMm   = distance (mm) where RED zone ends
-// yellowMaxMm = distance (mm) where YELLOW zone ends
-void applyThresholds(float redMaxMm, float yellowMaxMm) {
+// Recalculate all ring boundaries from the three color thresholds.
+void applyThresholds(float redMaxMm, float orangeMaxMm, float yellowMaxMm) {
+  if (redMaxMm <= 0.0f) return;
+  if (orangeMaxMm <= redMaxMm) return;
+  if (yellowMaxMm <= orangeMaxMm) return;
   DIST_RING1 = redMaxMm * 0.5f;
   DIST_RING2 = redMaxMm;
-  DIST_RING3 = redMaxMm + (yellowMaxMm - redMaxMm) * 0.5f;
+  DIST_RING3 = orangeMaxMm;
   DIST_RING4 = yellowMaxMm;
-  DIST_RING5 = yellowMaxMm + (yellowMaxMm - redMaxMm) * 0.5f;
+  DIST_RING5 = yellowMaxMm + (yellowMaxMm - orangeMaxMm) * 0.5f;
 }
 
 // =========================================================
@@ -522,8 +453,9 @@ void lightPreview() {
 
     uint8_t colorCode;
     if      (dist <= previewRedMm)    colorCode = LED_COLOR_RED;
-    else if (dist <= previewYellowMm) colorCode = LED_COLOR_ORANGE;
-    else                              colorCode = LED_COLOR_YELLOW;
+    else if (dist <= previewOrangeMm) colorCode = LED_COLOR_ORANGE;
+    else if (dist <= previewYellowMm) colorCode = LED_COLOR_YELLOW;
+    else                              colorCode = LED_COLOR_GREEN;
 
     for (int z = 0; z < zoneCount; z++) {
       if (!previewActiveSectors[z]) continue;
@@ -540,6 +472,7 @@ void lightPreview() {
       fillZoneInFrame(frame, leds, colorCode);
     }
   }
+  frame.leds[92] = LED_COLOR_BLUE;
   sendLedFrame(frame);
 }
 
@@ -816,10 +749,13 @@ void handleWebSocketMessage(const char* msg) {
     if (!doc["brightness"].isNull()) {
       currentBrightness = constrain((int)(doc["brightness"].as<float>() * 0.64f), 0, 64);
     }
-    if (!doc["redThreshold"].isNull() && !doc["yellowThreshold"].isNull()) {
-      float redMm    = doc["redThreshold"].as<float>()    * 10.0f; // cm → mm
+    if (!doc["redThreshold"].isNull() && !doc["orangeThreshold"].isNull() && !doc["yellowThreshold"].isNull()) {
+      float redMm = doc["redThreshold"].as<float>() * 10.0f;
+      float orangeMm = doc["orangeThreshold"].as<float>() * 10.0f;
       float yellowMm = doc["yellowThreshold"].as<float>() * 10.0f;
-      if (redMm > 0 && yellowMm > redMm) applyThresholds(redMm, yellowMm);
+      if (redMm > 0 && orangeMm > redMm && yellowMm > orangeMm) {
+        applyThresholds(redMm, orangeMm, yellowMm);
+      }
     }
     if (!doc["activeSectors"].isNull()) {
       JsonArray sectors = doc["activeSectors"].as<JsonArray>();
@@ -840,18 +776,12 @@ void handleWebSocketMessage(const char* msg) {
         currentRenderMode = (uint8_t)mode;
       }
     }
-    if (!doc["detectionMode"].isNull()) {
-      // UI value is accepted for compatibility but runtime is polar-only.
-      (void)doc["detectionMode"].as<int>();
-      currentDetectionMode = DETECTION_MODE_POLAR_GRID;
-    }
     Serial.printf("[Config] zoneMode=%d  brightness=%d%%  audio=%s  visual=%s\n",
                   currentZoneMode, (int)(currentBrightness / 0.64f),
                   audioEnabled ? "on" : "off", visualEnabled ? "on" : "off");
 
     // Relay updated settings to MainController so its zone computation matches
     sendConfigToMainController();
-    sendDetectionModeToMainController();
 
   } else if (strcmp(type, "navigate") == 0) {
     const char* action = doc["action"] | "";
@@ -885,10 +815,15 @@ void handleWebSocketMessage(const char* msg) {
       if (!doc["brightness"].isNull()) {
         previewBrightness = constrain((int)(doc["brightness"].as<float>() * 0.64f), 0, 64);
       }
-      if (!doc["redThreshold"].isNull() && !doc["yellowThreshold"].isNull()) {
-        float rMm = doc["redThreshold"].as<float>()    * 10.0f;
+      if (!doc["redThreshold"].isNull() && !doc["orangeThreshold"].isNull() && !doc["yellowThreshold"].isNull()) {
+        float rMm = doc["redThreshold"].as<float>() * 10.0f;
+        float oMm = doc["orangeThreshold"].as<float>() * 10.0f;
         float yMm = doc["yellowThreshold"].as<float>() * 10.0f;
-        if (rMm > 0 && yMm > rMm) { previewRedMm = rMm; previewYellowMm = yMm; }
+        if (rMm > 0 && oMm > rMm && yMm > oMm) {
+          previewRedMm = rMm;
+          previewOrangeMm = oMm;
+          previewYellowMm = yMm;
+        }
       }
       if (!doc["activeSectors"].isNull()) {
         JsonArray sectors = doc["activeSectors"].as<JsonArray>();
@@ -897,9 +832,9 @@ void handleWebSocketMessage(const char* msg) {
       }
 
       lightPreview();
-      Serial.printf("[Preview] zoneMode=%d  brightness=%d%%  red=%.0fmm  yellow=%.0fmm\n",
+      Serial.printf("[Preview] zoneMode=%d  brightness=%d%%  red=%.0fmm  orange=%.0fmm  yellow=%.0fmm\n",
                     previewZoneMode, (int)(previewBrightness / 0.64f),
-                    previewRedMm, previewYellowMm);
+                    previewRedMm, previewOrangeMm, previewYellowMm);
     }
 
   } else if (strcmp(type, "getConfig") == 0) {
@@ -919,8 +854,6 @@ void sendStatus(AsyncWebSocketClient* client) {
   bool ledControllerConnected =
       (lastLedControllerStatusMs != 0) &&
       ((nowMs - lastLedControllerStatusMs) <= COMPONENT_TIMEOUT_MS);
-  uint8_t detectionModeForUi =
-      mainControllerConnected ? lastMainDetectionMode : currentDetectionMode;
 
   uint8_t sensorMask = mainControllerConnected ? latestSensorSeenMask : 0;
   int leftPodOnlineSensors = 0;
@@ -944,11 +877,11 @@ void sendStatus(AsyncWebSocketClient* client) {
   doc["zoneMode"]       = currentZoneMode;
   doc["brightness"]     = (int)(currentBrightness / 0.64f);
   doc["redThreshold"]   = (int)(DIST_RING2 / 10.0f);
+  doc["orangeThreshold"]= (int)(DIST_RING3 / 10.0f);
   doc["yellowThreshold"]= (int)(DIST_RING4 / 10.0f);
   doc["audioEnabled"]   = audioEnabled;
   doc["visualEnabled"]  = visualEnabled;
   doc["renderMode"]     = (int)currentRenderMode;
-  doc["detectionMode"]  = (int)detectionModeForUi;
   doc["mainControllerConnected"] = mainControllerConnected;
   doc["ledControllerConnected"] = ledControllerConnected;
   doc["leftPodState"] = leftPodState;

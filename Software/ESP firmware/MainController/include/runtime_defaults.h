@@ -21,9 +21,11 @@ static constexpr bool kDefaultVisualEnabled = true;
 static constexpr uint8_t kDefaultActiveSectorMask = 0xFF;
 static constexpr uint8_t kDefaultLedRenderMode = 0;  // 0=sector fill, 1=radar
 
-// Distance ring boundaries in mm
-static constexpr float kRingThresholdsMm[5] = {
-    300.0f, 600.0f, 1050.0f, 1500.0f, 1950.0f};
+// Color thresholds in mm
+// <= red => RED, <= orange => ORANGE, <= yellow => YELLOW, else clear.
+static constexpr float kDefaultRedThresholdMm = 600.0f;
+static constexpr float kDefaultOrangeThresholdMm = 1050.0f;
+static constexpr float kDefaultYellowThresholdMm = 1500.0f;
 
 // Polar occupancy filter defaults for internal obstacle grid resolution.
 // LED output sectors are still selected separately via zone mode (4/6/8).

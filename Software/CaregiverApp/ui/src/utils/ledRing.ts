@@ -1,37 +1,46 @@
-// LED Ring geometry and SVG generation for ViviSense
-// 93 LEDs in 6 rings: [1, 6, 12, 18, 24, 32] (inner to outer)
+// LED ring geometry and SVG generation for ViviSense
+// 93 LEDs in 6 rings (outer -> inner): [32, 24, 16, 12, 8, 1]
 
-export const RING_COUNTS = [1, 6, 12, 18, 24, 32] as const;
+export const RING_COUNTS = [32, 24, 16, 12, 8, 1] as const;
 export const LED_OFF = '#1a1a2e';
 
-// The only three proximity colors used across all modes
-export const GREEN       = '#ffdd00'; // yellow — far/safe
-export const YELLOW      = '#ff8800'; // orange — medium
-export const RED         = '#ff2222'; // red    — close/danger
-export const IDLE_GREEN  = '#00cc55'; // true green — default/background state
+export const RED = '#ff2222';
+export const ORANGE = '#ff8800';
+export const YELLOW = '#ffdd00';
+export const GREEN = '#00cc55';
+export const BLUE = '#0066ff';
 
 export type Sector = 'N' | 'NE' | 'E' | 'SE' | 'S' | 'SW' | 'W' | 'NW';
 export const SECTOR_LABELS_4: Sector[] = ['N', 'E', 'S', 'W'];
 export const SECTOR_LABELS_6: Sector[] = ['N', 'NE', 'SE', 'S', 'SW', 'NW'];
 export const SECTOR_LABELS_8: Sector[] = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
-export const SECTOR_LABELS = SECTOR_LABELS_6; // kept for compatibility
+export const SECTOR_LABELS = SECTOR_LABELS_6;
 
 export interface LEDPosition {
   x: number;
   y: number;
-  ring: number;        // 0 = center/innermost, 5 = outermost
-  indexInRing: number;
-  angleDeg: number;    // clockwise from top (North); 0 for center LED
+  ring: number;        // 0 = outermost, 5 = center
+  indexInRing: number; // physical index order within ring (clockwise from bottom)
+  angleDeg: number;    // signed angle: 0=forward/top, +right, -left, ±180=back
   sector: Sector;
 }
 
 export type LEDColorFn = (led: LEDPosition) => string;
 
+function normalizeSignedAngle(angleDeg: number): number {
+  let a = angleDeg;
+  while (a >= 180) a -= 360;
+  while (a < -180) a += 360;
+  return a;
+}
+
 function getSector(angleDeg: number, labels: Sector[]): Sector {
   const n = labels.length;
-  const normalized = ((angleDeg % 360) + 360) % 360;
-  const idx = Math.floor(((normalized + (360 / n / 2)) % 360) / (360 / n));
-  return labels[idx % n]!;
+  const step = 360 / n;
+  let idx = Math.floor((angleDeg + step * 0.5) / step);
+  idx %= n;
+  if (idx < 0) idx += n;
+  return labels[idx]!;
 }
 
 export function generateLEDs(
@@ -50,15 +59,15 @@ export function generateLEDs(
       return;
     }
 
+    const step = 360 / count;
     for (let i = 0; i < count; i++) {
-      // Offset the 6-LED ring by half a step (30°) so it has a LED at the east
-      // and west cardinal positions (90°, 270°) rather than between them.
-      const offset = count === 6 ? 30 : 0;
-      const angleDeg = offset + (360 / count) * i;
-      const angleRad = (angleDeg - 90) * (Math.PI / 180);
+      // i=0 is physical bottom. Index increases clockwise.
+      const angleFromTopCw = ((180 + i * step) % 360 + 360) % 360;
+      const signedAngle = normalizeSignedAngle(angleFromTopCw);
+      const angleRad = (angleFromTopCw - 90) * (Math.PI / 180);
       const x = cx + r * Math.cos(angleRad);
       const y = cy + r * Math.sin(angleRad);
-      leds.push({ x, y, ring, indexInRing: i, angleDeg, sector: getSector(angleDeg, sectorLabels) });
+      leds.push({ x, y, ring, indexInRing: i, angleDeg: signedAngle, sector: getSector(signedAngle, sectorLabels) });
     }
   });
 
@@ -75,7 +84,12 @@ export function buildRingSVG(
   const cx = size / 2;
   const cy = size / 2;
   const outerR = size / 2 * 0.87;
-  const radii = RING_COUNTS.map((_, i) => (i === 0 ? 0 : (outerR / 5) * i));
+  const ringCount = RING_COUNTS.length;
+  const radii = RING_COUNTS.map((_, i) => {
+    if (i === ringCount - 1) return 0;
+    const t = i / (ringCount - 2);
+    return outerR * (1 - t * 0.86);
+  });
   const ledR = Math.max(2.2, size * 0.018);
   const leds = generateLEDs(cx, cy, radii, sectorLabels);
 
@@ -105,50 +119,32 @@ export function buildRingSVG(
 </svg>`;
 }
 
-// ─── Ring color helper ────────────────────────────────────────────────────────
-
-// Returns the proximity color for a given ring index (inner=red, middle=yellow, outer=green)
 export function ringColor(ring: number): string {
-  if (ring <= 1) return RED;
-  if (ring <= 3) return YELLOW;
+  if (ring >= 4) return RED;
+  if (ring >= 2) return ORANGE;
+  return YELLOW;
+}
+
+export function sectorModeColorFn(led: LEDPosition): string {
+  if (led.ring === 5) return BLUE;
+  if (led.sector === 'N') return RED;
+  if (led.sector === 'SE') return ORANGE;
+  if (led.sector === 'SW') return YELLOW;
   return GREEN;
 }
 
-// ─── Built-in mode color functions ───────────────────────────────────────────
-
-// Sector Mode preview: 3 evenly-spaced active sectors (N/SE/SW, ~120° apart), each a single color; remaining sectors idle green
-export function sectorModeColorFn(led: LEDPosition): string {
-  if (led.ring === 0) return LED_OFF;
-  if (led.sector === 'N')  return RED;
-  if (led.sector === 'SE') return YELLOW;
-  if (led.sector === 'SW') return GREEN;
-  return IDLE_GREEN;
-}
-
-// Layer Mode preview: same 3 sectors, each showing a different ring band
 export function layerModeColorFn(led: LEDPosition): string {
-  if (led.sector === 'N'  && led.ring <= 1) return RED;
-  if (led.sector === 'SE' && led.ring >= 2 && led.ring <= 3) return YELLOW;
-  if (led.sector === 'SW' && led.ring >= 4) return GREEN;
+  if (led.ring === 5) return BLUE;
+  if (led.sector === 'N' && led.ring >= 4) return RED;
+  if (led.sector === 'SE' && led.ring >= 2 && led.ring <= 3) return ORANGE;
+  if (led.sector === 'SW' && led.ring <= 1) return YELLOW;
   return LED_OFF;
 }
 
-// Radar Mode: object clusters at varying positions/distances against a green background
 export function radarModeColorFn(led: LEDPosition): string {
-  if (led.ring === 0) return IDLE_GREEN;
-  const a = led.angleDeg;
-  const r = led.ring;
-
-  // Close object to the north — larger red cluster across rings 1–2
-  // Ring 1 (6-LED ring offset 30°) nearest-north LED is at 330°
-  if (r === 1 && (a < 5 || a > 325)) return RED;
-  if (r === 2 && (a < 35 || a > 325)) return RED;
-
-  // Medium object to the southeast — orange cluster on ring 3
-  if (r === 3 && a >= 100 && a <= 140) return YELLOW;
-
-  // Distant object to the west — small yellow cluster on ring 5
-  if (r === 5 && a > 250 && a < 295) return GREEN;
-
-  return IDLE_GREEN;
+  if (led.ring === 5) return BLUE;
+  if (led.ring === 4 && Math.abs(led.angleDeg) < 20) return RED;
+  if (led.ring === 2 && led.angleDeg > 85 && led.angleDeg < 130) return ORANGE;
+  if (led.ring === 0 && led.angleDeg < -90 && led.angleDeg > -130) return YELLOW;
+  return LED_OFF;
 }

@@ -6,6 +6,7 @@
 #include <math.h>
 #include "SensorAndPoint.h"
 #include "runtime_defaults.h"
+#include "led_frame.h"
 
 // Minimal base receiver:
 // - ESP-NOW only
@@ -56,18 +57,13 @@ struct SensorPacket
 const uint8_t MSG_CONFIG           = 0xB1; // CaregiverApp -> MainController
 const uint8_t MSG_COMPONENT_STATUS = 0xB4; // MainController -> CaregiverApp (broadcast)
 const uint8_t MSG_DETECTION_MODE   = 0xB5; // CaregiverApp -> MainController
-const uint8_t MSG_LED_RENDER_FRAME = 0xB6; // MainController -> LEDRingController (broadcast)
 
 const uint8_t COMPONENT_MAIN_CONTROLLER = 1;
 const uint8_t DETECTION_MODE_POLAR_GRID = 2;
 
-const uint8_t LED_COLOR_OFF = 0;
-const uint8_t LED_COLOR_RED = 1;
-const uint8_t LED_COLOR_ORANGE = 2;
-const uint8_t LED_COLOR_YELLOW = 3;
-
 const uint8_t LED_RENDER_MODE_SECTOR_FILL = 0;
 const uint8_t LED_RENDER_MODE_RADAR = 1;
+const float NO_OBSTACLE_MM = 1.0e9f;
 
 // Sent by CaregiverApp when the caregiver changes settings in the browser UI.
 struct ConfigPacket
@@ -76,12 +72,13 @@ struct ConfigPacket
   uint8_t  zone_mode;          // 4, 6, or 8
   uint8_t  brightness;         // 0–64
   uint16_t red_threshold_mm;
+  uint16_t orange_threshold_mm;
   uint16_t yellow_threshold_mm;
   uint8_t  audio_enabled;
   uint8_t  visual_enabled;
   uint8_t  render_mode;
   uint8_t  active_sectors;     // bitmask — bit N = zone N enabled
-} __attribute__((packed));     // 11 bytes
+} __attribute__((packed));     // 13 bytes
 
 struct ComponentStatusPacket
 {
@@ -96,16 +93,6 @@ struct DetectionModePacket
   uint8_t msg_type;          // MSG_DETECTION_MODE
   uint8_t mode;              // 2=polar (other values ignored)
 } __attribute__((packed));   // 2 bytes
-
-struct LedRenderFramePacket
-{
-  uint8_t msg_type;              // MSG_LED_RENDER_FRAME
-  uint8_t render_mode;           // 0=sector-fill, 1=radar
-  uint8_t num_zones;             // 4, 6, or 8
-  uint8_t brightness;            // 0-64
-  uint8_t center_color;          // LED_COLOR_*
-  uint8_t ring_zone_colors[6][8]; // ring index 0..5 => rings 1..6, zone 0..7
-} __attribute__((packed));
 
 static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
@@ -126,12 +113,9 @@ int     proximityBrightness     = RuntimeDefaults::kDefaultBrightness;
 bool    proximityVisualEnabled  = RuntimeDefaults::kDefaultVisualEnabled;
 uint8_t proximityActiveSectors  = RuntimeDefaults::kDefaultActiveSectorMask;
 // Ring distance thresholds (mm) — updated by ConfigPacket
-float proximityDistRings[5] = {
-    RuntimeDefaults::kRingThresholdsMm[0],
-    RuntimeDefaults::kRingThresholdsMm[1],
-    RuntimeDefaults::kRingThresholdsMm[2],
-    RuntimeDefaults::kRingThresholdsMm[3],
-    RuntimeDefaults::kRingThresholdsMm[4]};
+float proximityRedThresholdMm = RuntimeDefaults::kDefaultRedThresholdMm;
+float proximityOrangeThresholdMm = RuntimeDefaults::kDefaultOrangeThresholdMm;
+float proximityYellowThresholdMm = RuntimeDefaults::kDefaultYellowThresholdMm;
 uint8_t proximityDetectionMode = DETECTION_MODE_POLAR_GRID;
 uint8_t proximityLedRenderMode = RuntimeDefaults::kDefaultLedRenderMode;
 
@@ -151,21 +135,35 @@ uint8_t  broadcastPeerAdded = 0;
 char serialCmdBuffer[200] = {0};
 uint16_t serialCmdLen = 0;
 
+// Physical ring geometry (outer to inner).
+static constexpr int kPhysicalRingCount = 6;
+static constexpr int kRenderableRingCount = 5; // excludes center ring
+static constexpr uint8_t kRingStarts[kPhysicalRingCount] = {0, 32, 56, 72, 84, 92};
+static constexpr uint8_t kRingCounts[kPhysicalRingCount] = {32, 24, 16, 12, 8, 1};
+
 // Forward declarations for proximity helpers (defined before setup())
-void applyProximityThresholds(float redMaxMm, float yellowMaxMm);
+void applyProximityThresholds(float redMaxMm, float orangeMaxMm, float yellowMaxMm);
 void updateAndBroadcastLedFrame();
+void sendClearLedFrame();
 void invalidateStaleSensors();
 void clearPolarGrid();
 void accumulatePolarHits(uint8_t hitMask[POLAR_BIN_COUNT]);
 void updatePolarGrid(const uint8_t hitMask[POLAR_BIN_COUNT]);
 void computeZoneProximityFromPolar(float closestMmByZone[8]);
-int proximityRingIndexFromDistance(float distMm);
 int polarRingIndexFromDistance(float distMm);
 float polarRepresentativeDistanceForRing(int ringIndex);
 void emitDetectionDebugFrame(const float closestMmByZone[8]);
 static int proximityZoneIndex(float angleDeg, int numZones);
 static int clampInt(int v, int lo, int hi);
-void broadcastLedRenderFrame(const float closestMmByZone[8]);
+static uint8_t colorForDistanceMm(float distMm);
+static int displayRingIndexFromDistance(float distMm);
+static float ledAngleDegForIndex(int ringIdx, int idxInRing);
+static int ledIndexFromAngleDeg(int ringIdx, float angleDeg);
+static void setLedByRingAngle(LedFrame_t &frame, int ringIdx, float angleDeg, uint8_t color);
+void buildSectorFrame(const float closestMmByZone[8], LedFrame_t &frame);
+void buildRadarFrame(LedFrame_t &frame);
+void buildLedFrame(const float closestMmByZone[8], LedFrame_t &frame);
+void broadcastLedFrame(const LedFrame_t &frame);
 void emitTuningConfigLine();
 void handleSerialCommand(char *line);
 void serviceSerialCommands();
@@ -357,10 +355,11 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
       proximityVisualEnabled = (cfg.visual_enabled != 0);
       proximityLedRenderMode = (uint8_t)clampInt((int)cfg.render_mode, 0, 1);
       proximityActiveSectors = cfg.active_sectors;
-      applyProximityThresholds(cfg.red_threshold_mm, cfg.yellow_threshold_mm);
+      applyProximityThresholds(cfg.red_threshold_mm, cfg.orange_threshold_mm, cfg.yellow_threshold_mm);
       if (!proximityVisualEnabled)
       {
         clearPolarGrid();
+        sendClearLedFrame();
       }
       Serial.printf("[Config] zones=%d bright=%d visual=%s led_mode=%d sectors=0x%02X\n",
                     proximityNumZones, proximityBrightness,
@@ -435,16 +434,6 @@ static int polarBinIndex(int ringIndex, int zoneIndex)
   return (ringIndex * POLAR_MAX_ZONES) + zoneIndex;
 }
 
-int proximityRingIndexFromDistance(float distMm)
-{
-  if (distMm < proximityDistRings[0]) return 0;
-  if (distMm < proximityDistRings[1]) return 1;
-  if (distMm < proximityDistRings[2]) return 2;
-  if (distMm < proximityDistRings[3]) return 3;
-  if (distMm < proximityDistRings[4]) return 4;
-  return 5;
-}
-
 int polarRingIndexFromDistance(float distMm)
 {
   if (distMm <= 0.0f) return 0;
@@ -514,14 +503,14 @@ void updatePolarGrid(const uint8_t hitMask[POLAR_BIN_COUNT])
   }
 }
 
-void applyProximityThresholds(float redMaxMm, float yellowMaxMm)
+void applyProximityThresholds(float redMaxMm, float orangeMaxMm, float yellowMaxMm)
 {
-  if (redMaxMm <= 0 || yellowMaxMm <= redMaxMm) return;
-  proximityDistRings[0] = redMaxMm * 0.5f;
-  proximityDistRings[1] = redMaxMm;
-  proximityDistRings[2] = redMaxMm + (yellowMaxMm - redMaxMm) * 0.5f;
-  proximityDistRings[3] = yellowMaxMm;
-  proximityDistRings[4] = yellowMaxMm + (yellowMaxMm - redMaxMm) * 0.5f;
+  if (redMaxMm <= 0.0f) return;
+  if (orangeMaxMm <= redMaxMm) return;
+  if (yellowMaxMm <= orangeMaxMm) return;
+  proximityRedThresholdMm = redMaxMm;
+  proximityOrangeThresholdMm = orangeMaxMm;
+  proximityYellowThresholdMm = yellowMaxMm;
 }
 
 // Returns 0-based zone index matching the CaregiverApp UI sector convention.
@@ -535,6 +524,83 @@ static int proximityZoneIndex(float angleDeg, int numZones)
   return idx;
 }
 
+static float normalizeAngleDeg(float angleDeg)
+{
+  while (angleDeg >= 180.0f) angleDeg -= 360.0f;
+  while (angleDeg < -180.0f) angleDeg += 360.0f;
+  return angleDeg;
+}
+
+static uint8_t colorForDistanceMm(float distMm)
+{
+  if (distMm <= 0.0f || distMm >= NO_OBSTACLE_MM) return LED_COLOR_OFF;
+  if (distMm <= proximityRedThresholdMm) return LED_COLOR_RED;
+  if (distMm <= proximityOrangeThresholdMm) return LED_COLOR_ORANGE;
+  if (distMm <= proximityYellowThresholdMm) return LED_COLOR_YELLOW;
+  return LED_COLOR_GREEN;
+}
+
+static int displayRingIndexFromDistance(float distMm)
+{
+  const float maxRange = RuntimeDefaults::kMaxObstacleRangeMm;
+  float clamped = distMm;
+  if (clamped < 0.0f) clamped = 0.0f;
+  if (clamped > maxRange) clamped = maxRange;
+  float normalized = clamped / maxRange;
+  int outwardIdx = (int)floorf(normalized * (float)kRenderableRingCount);
+  if (outwardIdx >= kRenderableRingCount) outwardIdx = kRenderableRingCount - 1;
+  int ring = (kRenderableRingCount - 1) - outwardIdx;
+  if (ring < 0) ring = 0;
+  if (ring >= kRenderableRingCount) ring = kRenderableRingCount - 1;
+  return ring;
+}
+
+static float ledAngleDegForIndex(int ringIdx, int idxInRing)
+{
+  if (ringIdx < 0 || ringIdx >= kPhysicalRingCount) return 0.0f;
+  int count = (int)kRingCounts[ringIdx];
+  if (count <= 0) return 0.0f;
+  float step = 360.0f / (float)count;
+  float angle = 180.0f + ((float)idxInRing * step);
+  return normalizeAngleDeg(angle);
+}
+
+static int ledIndexFromAngleDeg(int ringIdx, float angleDeg)
+{
+  if (ringIdx < 0 || ringIdx >= kPhysicalRingCount) return -1;
+  int count = (int)kRingCounts[ringIdx];
+  if (count <= 0) return -1;
+  float unsignedAngle = fmodf(angleDeg + 360.0f, 360.0f);
+  float cwFromBottom = fmodf((unsignedAngle - 180.0f) + 360.0f, 360.0f);
+  int idxInRing = (int)lroundf((cwFromBottom / 360.0f) * (float)count) % count;
+  if (idxInRing < 0) idxInRing += count;
+  return (int)kRingStarts[ringIdx] + idxInRing;
+}
+
+static int ledColorPriority(uint8_t color)
+{
+  switch (color)
+  {
+    case LED_COLOR_RED: return 5;
+    case LED_COLOR_ORANGE: return 4;
+    case LED_COLOR_YELLOW: return 3;
+    case LED_COLOR_GREEN: return 2;
+    case LED_COLOR_BLUE: return 1;
+    default: return 0;
+  }
+}
+
+static void setLedByRingAngle(LedFrame_t &frame, int ringIdx, float angleDeg, uint8_t color)
+{
+  int ledIdx = ledIndexFromAngleDeg(ringIdx, angleDeg);
+  if (ledIdx < 0 || ledIdx >= 93) return;
+  uint8_t existing = frame.leds[ledIdx];
+  if (ledColorPriority(color) >= ledColorPriority(existing))
+  {
+    frame.leds[ledIdx] = color;
+  }
+}
+
 static float polarZoneCenterAngleDeg(int zoneIdx)
 {
   const float step = 360.0f / (float)POLAR_MAX_ZONES;
@@ -545,7 +611,7 @@ static float polarZoneCenterAngleDeg(int zoneIdx)
 
 void computeZoneProximityFromPolar(float closestMmByZone[8])
 {
-  for (int z = 0; z < 8; z++) closestMmByZone[z] = 1e9f;
+  for (int z = 0; z < 8; z++) closestMmByZone[z] = NO_OBSTACLE_MM;
 
   int mappedOutputZoneByPolarZone[POLAR_MAX_ZONES];
   for (int iz = 0; iz < POLAR_MAX_ZONES; iz++)
@@ -594,15 +660,16 @@ void emitDetectionDebugFrame(const float closestMmByZone[8])
   Serial.print((int)proximityNumZones);
   Serial.print(",");
   Serial.print((int)proximityActiveSectors);
-  for (int i = 0; i < 5; i++)
-  {
-    Serial.print(",");
-    Serial.print((int)proximityDistRings[i]);
-  }
+  Serial.print(",");
+  Serial.print((int)proximityRedThresholdMm);
+  Serial.print(",");
+  Serial.print((int)proximityOrangeThresholdMm);
+  Serial.print(",");
+  Serial.print((int)proximityYellowThresholdMm);
   for (int z = 0; z < 8; z++)
   {
     Serial.print(",");
-    if (closestMmByZone[z] >= 1e9f) Serial.print(-1);
+    if (closestMmByZone[z] >= NO_OBSTACLE_MM) Serial.print(-1);
     else Serial.print((int)closestMmByZone[z]);
   }
   Serial.println();
@@ -649,60 +716,90 @@ void updateAndBroadcastLedFrame()
   computeZoneProximityFromPolar(closestMmByZone);
 
   emitDetectionDebugFrame(closestMmByZone);
-  broadcastLedRenderFrame(closestMmByZone);
+  LedFrame_t frame = {};
+  buildLedFrame(closestMmByZone, frame);
+  broadcastLedFrame(frame);
 }
 
-static uint8_t ringIndexToLedColor(int ringIndex)
+void sendClearLedFrame()
 {
-  // ringIndex 0..5 => rings 1..6
-  if (ringIndex <= 1) return LED_COLOR_RED;
-  if (ringIndex <= 3) return LED_COLOR_ORANGE;
-  return LED_COLOR_YELLOW;
+  LedFrame_t frame = {};
+  frame.brightness = (uint8_t)proximityBrightness;
+  broadcastLedFrame(frame);
 }
 
-static int mapOutputZoneIndex180(int zoneIdx, int numZones)
+void buildSectorFrame(const float closestMmByZone[8], LedFrame_t &frame)
 {
-  if (numZones <= 0) return zoneIdx;
-  return (zoneIdx + (numZones / 2)) % numZones;
-}
-
-void broadcastLedRenderFrame(const float closestMmByZone[8])
-{
-  LedRenderFramePacket pkt = {};
-  pkt.msg_type = MSG_LED_RENDER_FRAME;
-  pkt.render_mode = proximityLedRenderMode;
-  pkt.num_zones = (uint8_t)proximityNumZones;
-  pkt.brightness = (uint8_t)proximityBrightness;
-  pkt.center_color = LED_COLOR_OFF;
-
+  uint8_t zoneColors[8] = {0};
   for (int z = 0; z < proximityNumZones && z < 8; z++)
   {
-    float dist = closestMmByZone[z];
-    if (dist >= RuntimeDefaults::kMaxObstacleRangeMm) continue;
-    int outZone = mapOutputZoneIndex180(z, proximityNumZones);
-
-    int ringIdx = proximityRingIndexFromDistance(dist);
-    if (ringIdx < 0 || ringIdx > 5) continue;
-    uint8_t color = ringIndexToLedColor(ringIdx);
-
-    if (ringIdx == 0)
+    bool enabled = ((proximityActiveSectors & (1 << z)) != 0);
+    if (!enabled)
     {
-      pkt.center_color = color;
+      zoneColors[z] = LED_COLOR_OFF;
+      continue;
     }
 
-    if (proximityLedRenderMode == LED_RENDER_MODE_RADAR)
+    float dist = closestMmByZone[z];
+    if (dist <= proximityYellowThresholdMm)
     {
-      pkt.ring_zone_colors[ringIdx][outZone] = color;
+      zoneColors[z] = colorForDistanceMm(dist);
     }
     else
     {
-      // Sector mode: fill the full outward sector region (rings 2..6)
-      // with the closest obstacle color.
-      for (int r = 1; r <= 5; r++) pkt.ring_zone_colors[r][outZone] = color;
+      zoneColors[z] = LED_COLOR_GREEN;
     }
   }
 
-  esp_now_send(BROADCAST_MAC, (uint8_t *)&pkt, sizeof(pkt));
+  for (int ring = 0; ring < kRenderableRingCount; ring++)
+  {
+    int count = (int)kRingCounts[ring];
+    int start = (int)kRingStarts[ring];
+    for (int idx = 0; idx < count; idx++)
+    {
+      float angleDeg = ledAngleDegForIndex(ring, idx);
+      int zone = proximityZoneIndex(angleDeg, proximityNumZones);
+      if (zone < 0 || zone >= 8) continue;
+      frame.leds[start + idx] = zoneColors[zone];
+    }
+  }
+}
+
+void buildRadarFrame(LedFrame_t &frame)
+{
+  for (int ring = 0; ring < POLAR_NUM_RINGS; ring++)
+  {
+    float distMm = polarRepresentativeDistanceForRing(ring);
+    uint8_t color = colorForDistanceMm(distMm);
+    if (color == LED_COLOR_OFF || color == LED_COLOR_GREEN) continue;
+    int displayRing = displayRingIndexFromDistance(distMm);
+
+    for (int zone = 0; zone < POLAR_MAX_ZONES; zone++)
+    {
+      int idx = polarBinIndex(ring, zone);
+      if (idx < 0 || idx >= POLAR_BIN_COUNT) continue;
+      if (!polarOccupied[idx]) continue;
+
+      float angleDeg = polarZoneCenterAngleDeg(zone);
+      int uiZone = proximityZoneIndex(angleDeg, proximityNumZones);
+      if (uiZone < 0 || uiZone >= 8) continue;
+      if ((proximityActiveSectors & (1 << uiZone)) == 0) continue;
+      setLedByRingAngle(frame, displayRing, angleDeg, color);
+    }
+  }
+}
+
+void buildLedFrame(const float closestMmByZone[8], LedFrame_t &frame)
+{
+  frame.brightness = (uint8_t)proximityBrightness;
+  if (proximityLedRenderMode == LED_RENDER_MODE_RADAR) buildRadarFrame(frame);
+  else buildSectorFrame(closestMmByZone, frame);
+  frame.leds[kRingStarts[kPhysicalRingCount - 1]] = LED_COLOR_BLUE;
+}
+
+void broadcastLedFrame(const LedFrame_t &frame)
+{
+  esp_now_send(BROADCAST_MAC, (const uint8_t *)&frame, sizeof(frame));
 }
 
 static int clampInt(int v, int lo, int hi)
@@ -714,8 +811,9 @@ static int clampInt(int v, int lo, int hi)
 
 void emitTuningConfigLine()
 {
-  int redMm = (int)proximityDistRings[1];
-  int yellowMm = (int)proximityDistRings[3];
+  int redMm = (int)proximityRedThresholdMm;
+  int orangeMm = (int)proximityOrangeThresholdMm;
+  int yellowMm = (int)proximityYellowThresholdMm;
   Serial.print("CFG,mode,");
   Serial.print((int)proximityDetectionMode);
   Serial.print(",zones,");
@@ -728,6 +826,8 @@ void emitTuningConfigLine()
   Serial.print((int)proximityActiveSectors);
   Serial.print(",red_mm,");
   Serial.print(redMm);
+  Serial.print(",orange_mm,");
+  Serial.print(orangeMm);
   Serial.print(",yellow_mm,");
   Serial.print(yellowMm);
   Serial.print(",stale_ms,");
@@ -812,6 +912,7 @@ void handleSerialCommand(char *line)
     if (!proximityVisualEnabled)
     {
       clearPolarGrid();
+      sendClearLedFrame();
     }
   }
   else if (strcmp(key, "sectors_mask") == 0)
@@ -820,19 +921,31 @@ void handleSerialCommand(char *line)
   }
   else if (strcmp(key, "red_mm") == 0)
   {
-    int yellowMm = (int)proximityDistRings[3];
+    int orangeMm = (int)proximityOrangeThresholdMm;
+    int yellowMm = (int)proximityYellowThresholdMm;
     int redMm = clampInt((int)raw, 50, 2990);
-    if (redMm >= yellowMm) redMm = yellowMm - 10;
+    if (redMm >= orangeMm) redMm = orangeMm - 10;
     redMm = clampInt(redMm, 50, 2990);
-    applyProximityThresholds((float)redMm, (float)yellowMm);
+    applyProximityThresholds((float)redMm, (float)orangeMm, (float)yellowMm);
+  }
+  else if (strcmp(key, "orange_mm") == 0)
+  {
+    int redMm = (int)proximityRedThresholdMm;
+    int yellowMm = (int)proximityYellowThresholdMm;
+    int orangeMm = clampInt((int)raw, 60, 2995);
+    if (orangeMm <= redMm) orangeMm = redMm + 10;
+    if (orangeMm >= yellowMm) orangeMm = yellowMm - 10;
+    orangeMm = clampInt(orangeMm, 60, 2995);
+    applyProximityThresholds((float)redMm, (float)orangeMm, (float)yellowMm);
   }
   else if (strcmp(key, "yellow_mm") == 0)
   {
-    int redMm = (int)proximityDistRings[1];
-    int yellowMm = clampInt((int)raw, 60, 3000);
-    if (yellowMm <= redMm) yellowMm = redMm + 10;
-    yellowMm = clampInt(yellowMm, 60, 3000);
-    applyProximityThresholds((float)redMm, (float)yellowMm);
+    int redMm = (int)proximityRedThresholdMm;
+    int orangeMm = (int)proximityOrangeThresholdMm;
+    int yellowMm = clampInt((int)raw, 70, 3000);
+    if (yellowMm <= orangeMm) yellowMm = orangeMm + 10;
+    yellowMm = clampInt(yellowMm, 70, 3000);
+    applyProximityThresholds((float)redMm, (float)orangeMm, (float)yellowMm);
   }
   else if (strcmp(key, "stale_ms") == 0)
   {

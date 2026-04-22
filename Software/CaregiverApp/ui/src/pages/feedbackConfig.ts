@@ -5,7 +5,11 @@ import {
   SECTOR_LABELS_4,
   SECTOR_LABELS_6,
   SECTOR_LABELS_8,
-  RED, YELLOW, GREEN,
+  RED,
+  ORANGE,
+  YELLOW,
+  GREEN,
+  BLUE,
   LED_OFF,
   type Sector,
   type LEDPosition,
@@ -15,12 +19,10 @@ import { sendMessage, onMessage, offMessage } from '../utils/websocket.js';
 type FeedbackMode = 'sector' | 'radar';
 type AudioFeedbackMode = 'tonal' | 'verbal';
 type SectorCount = 4 | 6 | 8;
-type DetectionMode = 0 | 1 | 2;
 
 interface AdvancedSettings {
-  thresholds: { redMax: number; yellowMax: number }; // distances in cm
+  thresholds: { redMax: number; orangeMax: number; yellowMax: number }; // cm
   sectorCount: SectorCount;
-  detectionMode: DetectionMode;
   activeSectors: Partial<Record<Sector, boolean>>;
   brightness: number;
 }
@@ -50,9 +52,8 @@ function defaultState(): ConfigState {
     selectedMode: 'sector',
     selectedAudioMode: null,
     advanced: {
-      thresholds: { redMax: 60, yellowMax: 150 },
+      thresholds: { redMax: 60, orangeMax: 105, yellowMax: 150 },
       sectorCount: 6,
-      detectionMode: 2,
       activeSectors: buildDefaultSectors(6),
       brightness: 100,
     },
@@ -63,19 +64,20 @@ let state: ConfigState = defaultState();
 let previewActive = false;
 let configStatusHandler: ((data: unknown) => void) | null = null;
 
-// Ring → approximate max distance in cm (ring 0 = innermost/closest)
-const RING_DISTANCES = [20, 50, 100, 150, 200, 300];
+// Approximate ring distances in cm for preview ring coloring (outer -> inner).
+const RING_DISTANCES_CM = [280, 220, 160, 110, 60, 0];
 
-function getColorForRing(ring: number): string {
-  const dist = RING_DISTANCES[ring] ?? 0;
-  if (dist <= state.advanced.thresholds.redMax) return RED;
-  if (dist <= state.advanced.thresholds.yellowMax) return YELLOW;
+function getColorForDistance(distanceCm: number): string {
+  if (distanceCm <= state.advanced.thresholds.redMax) return RED;
+  if (distanceCm <= state.advanced.thresholds.orangeMax) return ORANGE;
+  if (distanceCm <= state.advanced.thresholds.yellowMax) return YELLOW;
   return GREEN;
 }
 
 function advancedColorFn(led: LEDPosition): string {
+  if (led.ring === 5) return BLUE;
   if (!state.advanced.activeSectors[led.sector]) return LED_OFF;
-  return getColorForRing(led.ring);
+  return getColorForDistance(RING_DISTANCES_CM[led.ring] ?? 9999);
 }
 
 function refreshPreview(): void {
@@ -85,29 +87,24 @@ function refreshPreview(): void {
   el.innerHTML = buildRingSVG(220, advancedColorFn, state.advanced.brightness, true, labels);
 }
 
-// Sends the current advanced settings to the ESP32 for obstacle detection mode.
-// Called whenever settings change so the device stays in sync even when not previewing.
 function sendConfig(): void {
-  const { thresholds, sectorCount, brightness, detectionMode } = state.advanced;
+  const { thresholds, sectorCount, brightness } = state.advanced;
   const labels = getSectorLabels(sectorCount);
   const activeSectorsArray = labels.map(s => state.advanced.activeSectors[s] ?? true);
   sendMessage({
-    type:            'config',
-    zoneMode:        sectorCount,
-    brightness:      brightness,
-    redThreshold:    thresholds.redMax,
+    type: 'config',
+    zoneMode: sectorCount,
+    brightness,
+    redThreshold: thresholds.redMax,
+    orangeThreshold: thresholds.orangeMax,
     yellowThreshold: thresholds.yellowMax,
-    activeSectors:   activeSectorsArray,
-    renderMode:      state.selectedMode === 'radar' ? 1 : 0,
-    detectionMode:   detectionMode,
-    audioEnabled:    state.audioEnabled,
-    visualEnabled:   state.visualEnabled,
+    activeSectors: activeSectorsArray,
+    renderMode: state.selectedMode === 'radar' ? 1 : 0,
+    audioEnabled: state.audioEnabled,
+    visualEnabled: state.visualEnabled,
   });
 }
 
-// Sends a preview message to the ESP32.
-// active=true  → light the ring to match the current live preview
-// active=false → clear the ring and return to obstacle detection mode
 function sendPreview(active: boolean): void {
   if (!active) {
     sendMessage({ type: 'preview', active: false });
@@ -117,13 +114,14 @@ function sendPreview(active: boolean): void {
   const labels = getSectorLabels(sectorCount);
   const activeSectorsArray = labels.map(s => state.advanced.activeSectors[s] ?? true);
   sendMessage({
-    type:            'preview',
-    active:          true,
-    zoneMode:        sectorCount,
-    brightness:      brightness,
-    redThreshold:    thresholds.redMax,
+    type: 'preview',
+    active: true,
+    zoneMode: sectorCount,
+    brightness,
+    redThreshold: thresholds.redMax,
+    orangeThreshold: thresholds.orangeMax,
     yellowThreshold: thresholds.yellowMax,
-    activeSectors:   activeSectorsArray,
+    activeSectors: activeSectorsArray,
   });
 }
 
@@ -134,73 +132,70 @@ function renderSectorToggles(): string {
   }).join('');
 }
 
-// Applies a status message from the ESP32 to both state and the live DOM.
-// Called when the device responds to a getConfig request or on WS connect.
 function applyStatus(msg: Record<string, unknown>): void {
-  const zoneMode        = msg['zoneMode']        as number  | undefined;
-  const brightness      = msg['brightness']      as number  | undefined;
-  const redThreshold    = msg['redThreshold']    as number  | undefined;
-  const yellowThreshold = msg['yellowThreshold'] as number  | undefined;
-  const renderMode      = msg['renderMode']      as number  | undefined;
-  const detectionMode   = msg['detectionMode']   as number  | undefined;
-  const activeSectors   = msg['activeSectors']   as boolean[] | undefined;
-  const audioEn         = msg['audioEnabled']    as boolean | undefined;
-  const visualEn        = msg['visualEnabled']   as boolean | undefined;
+  const zoneMode = msg['zoneMode'] as number | undefined;
+  const brightness = msg['brightness'] as number | undefined;
+  const redThreshold = msg['redThreshold'] as number | undefined;
+  const orangeThreshold = msg['orangeThreshold'] as number | undefined;
+  const yellowThreshold = msg['yellowThreshold'] as number | undefined;
+  const renderMode = msg['renderMode'] as number | undefined;
+  const activeSectors = msg['activeSectors'] as boolean[] | undefined;
+  const audioEn = msg['audioEnabled'] as boolean | undefined;
+  const visualEn = msg['visualEnabled'] as boolean | undefined;
 
-  // ── Update state ────────────────────────────────────────────────────────────
-  if (zoneMode !== undefined && ([4, 6, 8] as number[]).includes(zoneMode))
+  if (zoneMode !== undefined && ([4, 6, 8] as number[]).includes(zoneMode)) {
     state.advanced.sectorCount = zoneMode as SectorCount;
-  if (brightness      !== undefined) state.advanced.brightness           = brightness;
-  if (redThreshold    !== undefined) state.advanced.thresholds.redMax    = redThreshold;
+  }
+  if (brightness !== undefined) state.advanced.brightness = brightness;
+  if (redThreshold !== undefined) state.advanced.thresholds.redMax = redThreshold;
+  if (orangeThreshold !== undefined) state.advanced.thresholds.orangeMax = orangeThreshold;
   if (yellowThreshold !== undefined) state.advanced.thresholds.yellowMax = yellowThreshold;
-  if (renderMode !== undefined && (renderMode === 0 || renderMode === 1))
+  if (renderMode !== undefined && (renderMode === 0 || renderMode === 1)) {
     state.selectedMode = renderMode === 1 ? 'radar' : 'sector';
-  if (detectionMode !== undefined && [0, 1, 2].includes(detectionMode))
-    state.advanced.detectionMode = detectionMode as DetectionMode;
-  if (activeSectors   !== undefined) {
+  }
+  if (activeSectors !== undefined) {
     getSectorLabels(state.advanced.sectorCount).forEach((s, i) => {
       state.advanced.activeSectors[s] = activeSectors[i] ?? true;
     });
   }
-  if (audioEn  !== undefined) state.audioEnabled  = audioEn;
+  if (audioEn !== undefined) state.audioEnabled = audioEn;
   if (visualEn !== undefined) state.visualEnabled = visualEn;
 
-  // ── Sync DOM ─────────────────────────────────────────────────────────────────
-  // Brightness
   const brightSlider = document.getElementById('brightness-slider') as HTMLInputElement | null;
-  const brightVal    = document.getElementById('brightness-value');
+  const brightVal = document.getElementById('brightness-value');
   if (brightSlider && brightness !== undefined) brightSlider.value = String(brightness);
-  if (brightVal    && brightness !== undefined) brightVal.textContent = `${brightness}%`;
+  if (brightVal && brightness !== undefined) brightVal.textContent = `${brightness}%`;
 
-  // Thresholds
-  const redSlider      = document.getElementById('threshold-red')    as HTMLInputElement | null;
-  const redValEl       = document.getElementById('red-threshold-val');
-  const yellowSlider   = document.getElementById('threshold-yellow') as HTMLInputElement | null;
-  const yellowValEl    = document.getElementById('yellow-threshold-val');
-  const greenStartsEl  = document.getElementById('green-starts-val');
-  if (redSlider   && redThreshold    !== undefined) redSlider.value   = String(redThreshold);
-  if (redValEl    && redThreshold    !== undefined) redValEl.textContent = String(redThreshold);
+  const redSlider = document.getElementById('threshold-red') as HTMLInputElement | null;
+  const redValEl = document.getElementById('red-threshold-val');
+  const orangeSlider = document.getElementById('threshold-orange') as HTMLInputElement | null;
+  const orangeValEl = document.getElementById('orange-threshold-val');
+  const yellowSlider = document.getElementById('threshold-yellow') as HTMLInputElement | null;
+  const yellowValEl = document.getElementById('yellow-threshold-val');
+  const greenStartsEl = document.getElementById('green-starts-val');
+  if (redSlider && redThreshold !== undefined) redSlider.value = String(redThreshold);
+  if (redValEl && redThreshold !== undefined) redValEl.textContent = String(redThreshold);
+  if (orangeSlider && orangeThreshold !== undefined) orangeSlider.value = String(orangeThreshold);
+  if (orangeValEl && orangeThreshold !== undefined) orangeValEl.textContent = String(orangeThreshold);
   if (yellowSlider && yellowThreshold !== undefined) yellowSlider.value = String(yellowThreshold);
-  if (yellowValEl  && yellowThreshold !== undefined) yellowValEl.textContent = String(yellowThreshold);
+  if (yellowValEl && yellowThreshold !== undefined) yellowValEl.textContent = String(yellowThreshold);
   if (greenStartsEl && yellowThreshold !== undefined) greenStartsEl.textContent = String(yellowThreshold);
 
-  document.querySelectorAll<HTMLButtonElement>('.detection-mode-btn').forEach(btn => {
-    btn.classList.toggle('active', Number(btn.dataset['mode']) === state.advanced.detectionMode);
-  });
   document.querySelectorAll<HTMLElement>('.mode-card[data-mode]').forEach(card => {
     card.classList.toggle('selected', card.dataset['mode'] === state.selectedMode);
   });
 
-  // Sector count buttons + toggles (re-render if zone or sector state changed)
   if (zoneMode !== undefined || activeSectors !== undefined) {
     document.querySelectorAll<HTMLButtonElement>('.sector-count-btn[data-count]').forEach(btn => {
       btn.classList.toggle('active', Number(btn.dataset['count']) === state.advanced.sectorCount);
     });
     const container = document.getElementById('sector-toggles-container');
-    if (container) { container.innerHTML = renderSectorToggles(); initSectorToggles(); }
+    if (container) {
+      container.innerHTML = renderSectorToggles();
+      initSectorToggles();
+    }
   }
 
-  // Audio enable button + cards
   const audioEnableBtn = document.getElementById('audio-enable-btn') as HTMLButtonElement | null;
   const audioModeCards = document.getElementById('audio-mode-cards');
   if (audioEnableBtn) {
@@ -209,7 +204,6 @@ function applyStatus(msg: Record<string, unknown>): void {
   }
   audioModeCards?.classList.toggle('section-disabled', !state.audioEnabled);
 
-  // Visual enable button + cards
   const visualEnableBtn = document.getElementById('visual-enable-btn') as HTMLButtonElement | null;
   const visualModeCards = document.getElementById('visual-mode-cards');
   if (visualEnableBtn) {
@@ -221,11 +215,9 @@ function applyStatus(msg: Record<string, unknown>): void {
   refreshPreview();
 }
 
-// ─── Render ───────────────────────────────────────────────────────────────────
-
 export function renderFeedbackConfig(): string {
   const sectorSVG = buildRingSVG(120, sectorModeColorFn, 100, false);
-  const radarSVG  = buildRingSVG(120, radarModeColorFn, 100, false);
+  const radarSVG = buildRingSVG(120, radarModeColorFn, 100, false);
 
   const tonalSVG = `<svg width="120" height="120" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
     <circle cx="60" cy="60" r="58" fill="#0a0a14"/>
@@ -246,15 +238,13 @@ export function renderFeedbackConfig(): string {
     <line x1="42" y1="104" x2="78" y2="104" stroke="#764ba2" stroke-width="4.5" stroke-linecap="round"/>
   </svg>`;
 
-  const { thresholds, sectorCount, brightness, detectionMode } = state.advanced;
+  const { thresholds, sectorCount, brightness } = state.advanced;
   const previewSVG = buildRingSVG(220, advancedColorFn, brightness, true, getSectorLabels(sectorCount));
-
   const sectorTogglesHTML = renderSectorToggles();
 
   return `
     <main class="config-content">
 
-      <!-- Audio feedback mode -->
       <section class="config-section">
         <div class="section-header">
           <div>
@@ -267,7 +257,6 @@ export function renderFeedbackConfig(): string {
         </div>
 
         <div class="mode-cards${!state.audioEnabled ? ' section-disabled' : ''}" id="audio-mode-cards">
-
           <div class="mode-card${state.selectedAudioMode === 'tonal' ? ' selected' : ''}" data-audio-mode="tonal">
             <div class="mode-diagram">${tonalSVG}</div>
             <h3 class="mode-name">Tonal</h3>
@@ -279,14 +268,11 @@ export function renderFeedbackConfig(): string {
             <h3 class="mode-name">Verbal</h3>
             <p class="mode-desc">Spoken audio cues describe the direction and distance of detected obstacles.</p>
           </div>
-
         </div>
       </section>
 
-      <!-- Divider -->
       <div class="section-divider"></div>
 
-      <!-- Visual feedback mode -->
       <section class="config-section">
         <div class="section-header">
           <div>
@@ -299,38 +285,33 @@ export function renderFeedbackConfig(): string {
         </div>
 
         <div class="mode-cards${!state.visualEnabled ? ' section-disabled' : ''}" id="visual-mode-cards">
-
           <div class="mode-card${state.selectedMode === 'sector' ? ' selected' : ''}" data-mode="sector">
             <div class="mode-diagram">${sectorSVG}</div>
             <h3 class="mode-name">Sector Mode</h3>
-            <p class="mode-desc">Each directional zone lights yellow, orange, or red based on obstacle distance.</p>
+            <p class="mode-desc">Each zone shows red/orange/yellow by nearest obstacle distance, or green when clear.</p>
           </div>
 
           <div class="mode-card${state.selectedMode === 'radar' ? ' selected' : ''}" data-mode="radar">
             <div class="mode-diagram">${radarSVG}</div>
             <h3 class="mode-name">Radar Mode</h3>
-            <p class="mode-desc">Ring color shows obstacle distance with no directional zones — full 360° display. Yellow = far, orange = medium, red = close.</p>
+            <p class="mode-desc">Occupied positions are rendered by angle and radius directly from the polar occupancy grid.</p>
           </div>
-
         </div>
       </section>
 
-      <!-- Divider -->
       <div class="section-divider"></div>
 
-      <!-- Advanced settings (collapsible) -->
       <section class="config-section">
         <div class="advanced-header" id="advanced-toggle">
           <div>
             <h2 class="section-title">Advanced Settings</h2>
-            <p class="section-subtitle">Adjust distance thresholds, active sectors, and brightness.</p>
+            <p class="section-subtitle">Adjust thresholds, active sectors, and brightness.</p>
           </div>
           <span class="advanced-chevron" id="advanced-chevron">&#9660;</span>
         </div>
 
         <div class="advanced-body" id="advanced-body">
 
-          <!-- Distance thresholds -->
           <div class="subsection">
             <h3 class="subsection-title">Distance Thresholds</h3>
             <div class="threshold-control">
@@ -344,28 +325,24 @@ export function renderFeedbackConfig(): string {
               <div class="threshold-row">
                 <div class="threshold-label">
                   <span class="color-dot dot-orange"></span>
-                  <span>Orange up to <strong><span id="yellow-threshold-val">${thresholds.yellowMax}</span> cm</strong></span>
+                  <span>Orange up to <strong><span id="orange-threshold-val">${thresholds.orangeMax}</span> cm</strong></span>
                 </div>
-                <input type="range" id="threshold-yellow" min="20" max="800" value="${thresholds.yellowMax}" />
+                <input type="range" id="threshold-orange" min="20" max="600" value="${thresholds.orangeMax}" />
+              </div>
+              <div class="threshold-row">
+                <div class="threshold-label">
+                  <span class="color-dot dot-yellow"></span>
+                  <span>Yellow up to <strong><span id="yellow-threshold-val">${thresholds.yellowMax}</span> cm</strong></span>
+                </div>
+                <input type="range" id="threshold-yellow" min="30" max="800" value="${thresholds.yellowMax}" />
               </div>
               <p class="threshold-note">
-                <span class="color-dot dot-yellow"></span>
-                Yellow beyond <span id="green-starts-val">${thresholds.yellowMax}</span> cm
+                <span class="color-dot dot-green"></span>
+                Green beyond <span id="green-starts-val">${thresholds.yellowMax}</span> cm
               </p>
             </div>
           </div>
 
-          <!-- Sector count + toggles -->
-          <div class="subsection">
-            <h3 class="subsection-title">Detection Mode</h3>
-            <div class="sector-count-selector">
-              <button class="sector-count-btn detection-mode-btn${detectionMode === 0 ? ' active' : ''}" data-mode="0">Direct</button>
-              <button class="sector-count-btn detection-mode-btn${detectionMode === 1 ? ' active' : ''}" data-mode="1">Cartesian</button>
-              <button class="sector-count-btn detection-mode-btn${detectionMode === 2 ? ' active' : ''}" data-mode="2">Polar</button>
-            </div>
-          </div>
-
-          <!-- Sector count + toggles -->
           <div class="subsection">
             <h3 class="subsection-title">Active Sectors</h3>
             <div class="sector-count-selector">
@@ -373,18 +350,14 @@ export function renderFeedbackConfig(): string {
               <button class="sector-count-btn${sectorCount === 6 ? ' active' : ''}" data-count="6">6 Sectors</button>
               <button class="sector-count-btn${sectorCount === 8 ? ' active' : ''}" data-count="8">8 Sectors</button>
             </div>
-            <div class="sector-toggles" id="sector-toggles-container">
-              ${sectorTogglesHTML}
-            </div>
+            <div class="sector-toggles" id="sector-toggles-container">${sectorTogglesHTML}</div>
           </div>
 
-          <!-- Brightness -->
           <div class="subsection">
-            <h3 class="subsection-title">Brightness — <span id="brightness-value">${brightness}%</span></h3>
+            <h3 class="subsection-title">Brightness - <span id="brightness-value">${brightness}%</span></h3>
             <input type="range" id="brightness-slider" min="0" max="100" value="${brightness}" />
           </div>
 
-          <!-- Live preview -->
           <div class="subsection">
             <div class="preview-header">
               <h3 class="subsection-title">Live Preview</h3>
@@ -399,8 +372,6 @@ export function renderFeedbackConfig(): string {
       </section>
     </main>`;
 }
-
-// ─── Init ─────────────────────────────────────────────────────────────────────
 
 function initSectorToggles(): void {
   document.querySelectorAll<HTMLButtonElement>('.sector-toggle').forEach(btn => {
@@ -419,7 +390,6 @@ function initSectorToggles(): void {
 export function initFeedbackConfig(): void {
   state = defaultState();
 
-  // Audio enable toggle
   const audioEnableBtn = document.getElementById('audio-enable-btn') as HTMLButtonElement | null;
   const audioModeCards = document.getElementById('audio-mode-cards');
   audioEnableBtn?.addEventListener('click', () => {
@@ -430,7 +400,6 @@ export function initFeedbackConfig(): void {
     sendConfig();
   });
 
-  // Visual enable toggle
   const visualEnableBtn = document.getElementById('visual-enable-btn') as HTMLButtonElement | null;
   const visualModeCards = document.getElementById('visual-mode-cards');
   visualEnableBtn?.addEventListener('click', () => {
@@ -441,7 +410,6 @@ export function initFeedbackConfig(): void {
     sendConfig();
   });
 
-  // Visual mode card selection
   document.querySelectorAll<HTMLElement>('.mode-card[data-mode]').forEach(card => {
     card.addEventListener('click', () => {
       const mode = card.dataset['mode'] as FeedbackMode;
@@ -453,7 +421,6 @@ export function initFeedbackConfig(): void {
     });
   });
 
-  // Audio mode card selection
   document.querySelectorAll<HTMLElement>('.mode-card[data-audio-mode]').forEach(card => {
     card.addEventListener('click', () => {
       const mode = card.dataset['audioMode'] as AudioFeedbackMode;
@@ -463,11 +430,8 @@ export function initFeedbackConfig(): void {
     });
   });
 
-  // Display button — toggle preview on the physical LED ring
   previewActive = false;
 
-  // Restore UI state from ESP32 — remove any stale handler from a previous visit,
-  // register a new one, then ask the device for its current config.
   if (configStatusHandler) offMessage(configStatusHandler);
   configStatusHandler = (raw: unknown) => {
     const msg = raw as Record<string, unknown>;
@@ -476,6 +440,7 @@ export function initFeedbackConfig(): void {
   };
   onMessage(configStatusHandler);
   sendMessage({ type: 'getConfig' });
+
   const displayBtn = document.getElementById('display-toggle') as HTMLButtonElement | null;
   displayBtn?.addEventListener('click', () => {
     previewActive = !previewActive;
@@ -484,30 +449,30 @@ export function initFeedbackConfig(): void {
       sendPreview(true);
     } else {
       sendPreview(false);
-      sendConfig(); // Re-apply settings for obstacle detection now that preview ended
+      sendConfig();
     }
   });
 
-  // Advanced settings toggle
-  const advancedToggle  = document.getElementById('advanced-toggle');
-  const advancedBody    = document.getElementById('advanced-body');
+  const advancedToggle = document.getElementById('advanced-toggle');
+  const advancedBody = document.getElementById('advanced-body');
   const advancedChevron = document.getElementById('advanced-chevron');
   advancedToggle?.addEventListener('click', () => {
     const isOpen = advancedBody?.classList.toggle('open');
     advancedChevron?.classList.toggle('open', isOpen);
   });
 
-  // Distance threshold sliders
-  const redSlider      = document.getElementById('threshold-red')    as HTMLInputElement | null;
-  const yellowSlider   = document.getElementById('threshold-yellow') as HTMLInputElement | null;
-  const redVal         = document.getElementById('red-threshold-val');
-  const yellowVal      = document.getElementById('yellow-threshold-val');
+  const redSlider = document.getElementById('threshold-red') as HTMLInputElement | null;
+  const orangeSlider = document.getElementById('threshold-orange') as HTMLInputElement | null;
+  const yellowSlider = document.getElementById('threshold-yellow') as HTMLInputElement | null;
+  const redVal = document.getElementById('red-threshold-val');
+  const orangeVal = document.getElementById('orange-threshold-val');
+  const yellowVal = document.getElementById('yellow-threshold-val');
   const greenStartsVal = document.getElementById('green-starts-val');
 
   redSlider?.addEventListener('input', () => {
     let v = Number(redSlider.value);
-    if (v >= state.advanced.thresholds.yellowMax) {
-      v = state.advanced.thresholds.yellowMax - 10;
+    if (v >= state.advanced.thresholds.orangeMax) {
+      v = state.advanced.thresholds.orangeMax - 10;
       redSlider.value = String(v);
     }
     state.advanced.thresholds.redMax = v;
@@ -517,10 +482,26 @@ export function initFeedbackConfig(): void {
     if (previewActive) sendPreview(true);
   });
 
-  yellowSlider?.addEventListener('input', () => {
-    let v = Number(yellowSlider.value);
+  orangeSlider?.addEventListener('input', () => {
+    let v = Number(orangeSlider.value);
     if (v <= state.advanced.thresholds.redMax) {
       v = state.advanced.thresholds.redMax + 10;
+    }
+    if (v >= state.advanced.thresholds.yellowMax) {
+      v = state.advanced.thresholds.yellowMax - 10;
+    }
+    orangeSlider.value = String(v);
+    state.advanced.thresholds.orangeMax = v;
+    if (orangeVal) orangeVal.textContent = String(v);
+    refreshPreview();
+    sendConfig();
+    if (previewActive) sendPreview(true);
+  });
+
+  yellowSlider?.addEventListener('input', () => {
+    let v = Number(yellowSlider.value);
+    if (v <= state.advanced.thresholds.orangeMax) {
+      v = state.advanced.thresholds.orangeMax + 10;
       yellowSlider.value = String(v);
     }
     state.advanced.thresholds.yellowMax = v;
@@ -531,18 +512,6 @@ export function initFeedbackConfig(): void {
     if (previewActive) sendPreview(true);
   });
 
-  document.querySelectorAll<HTMLButtonElement>('.detection-mode-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const mode = Number(btn.dataset['mode']) as DetectionMode;
-      if (mode === state.advanced.detectionMode) return;
-      state.advanced.detectionMode = mode;
-      document.querySelectorAll('.detection-mode-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      sendConfig();
-    });
-  });
-
-  // Sector count selector
   document.querySelectorAll<HTMLButtonElement>('.sector-count-btn[data-count]').forEach(btn => {
     btn.addEventListener('click', () => {
       const count = Number(btn.dataset['count']) as SectorCount;
@@ -571,9 +540,8 @@ export function initFeedbackConfig(): void {
 
   initSectorToggles();
 
-  // Brightness slider
   const brightnessSlider = document.getElementById('brightness-slider') as HTMLInputElement | null;
-  const brightnessValue  = document.getElementById('brightness-value');
+  const brightnessValue = document.getElementById('brightness-value');
   brightnessSlider?.addEventListener('input', () => {
     state.advanced.brightness = Number(brightnessSlider.value);
     if (brightnessValue) brightnessValue.textContent = `${state.advanced.brightness}%`;

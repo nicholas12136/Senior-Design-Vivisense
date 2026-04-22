@@ -98,6 +98,7 @@ Live serial tuning (MainController serial monitor) still supports:
 - `SET,visual,<0|1>`
 - `SET,sectors_mask,<0..255>`
 - `SET,red_mm,<value>`
+- `SET,orange_mm,<value>`
 - `SET,yellow_mm,<value>`
 - `SET,stale_ms,<value>`
 - `SET,status_ms,<value>`

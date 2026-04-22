@@ -666,6 +666,7 @@ input[type='range']::-moz-range-thumb {
 .dot-red    { background: #ff2222; box-shadow: 0 0 4px rgba(255,34,34,0.5); }
 .dot-orange { background: #ff8800; box-shadow: 0 0 4px rgba(255,136,0,0.5); }
 .dot-yellow { background: #ffdd00; box-shadow: 0 0 4px rgba(255,221,0,0.5); }
+.dot-green { background: #00cc55; box-shadow: 0 0 4px rgba(0,204,85,0.5); }
 .threshold-note {
   font-size: 11px;
   color: #6c757d;
