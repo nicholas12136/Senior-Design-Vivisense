@@ -261,30 +261,6 @@ public:
         }
     }
 
-    // Debug print of the raw arrays (distance/status/numTargets)
-    void printRawCellData() const
-    {
-        // Prints raw per-cell distance/status/target-count values over Serial.
-        Serial.print("Sensor ");
-        Serial.print(sensorId);
-        Serial.println(" raw cell data:");
-
-        for (int cell = 0; cell < kNumCells; cell++)
-        {
-            Serial.print("  cell ");
-            Serial.print(cell);
-
-            Serial.print(" distMm=");
-            Serial.print(cellDistanceMm[cell]);
-
-            Serial.print(" targetStatus=");
-            Serial.print(targetStatus[cell]);
-
-            Serial.print(" numTargets=");
-            Serial.println(numTargets[cell]);
-        }
-    }
-
 private:
     void computeCellDirectionVectors_()
     {

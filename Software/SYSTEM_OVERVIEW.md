@@ -3,6 +3,7 @@
 ViviSense is a wheelchair obstacle-awareness system for pediatric manual wheelchair users. Eight VL53L7CX time-of-flight sensors scan the environment, and a 93-LED NeoPixel ring provides directional proximity feedback. A caregiver can connect over WiFi to configure feedback and play navigation audio prompts.
 
 For step-by-step bring-up from scratch, see `Software/RUNNING_THE_SYSTEM.md`.
+For a function-level runtime deep dive of MainController, see `Software/ESP firmware/MainController/PROGRAM_FLOW.md`.
 
 ---
 

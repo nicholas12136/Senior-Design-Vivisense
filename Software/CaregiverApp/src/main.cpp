@@ -49,7 +49,7 @@
 #define NUM_LEDS       93
 #define ESPNOW_CHANNEL  1   // must match the LED ESP32's channel
 
-static uint8_t LED_ESP32_MAC[] = {0xE0, 0x8C, 0xFE, 0xB4, 0xE0, 0x6C};
+static uint8_t LED_ESP32_MAC[] = {0x88, 0x56, 0xA6 , 0x6D , 0x0E , 0x8C};
 
 // Broadcast MAC used to send ConfigPackets to MainController.
 // MainController receives them via its own broadcast peer registration.

@@ -56,11 +56,20 @@ const uint8_t MSG_CONFIG           = 0xB1; // CaregiverApp -> MainController (+ 
 const uint8_t MSG_ZONE_PROXIMITY   = 0xB3; // MainController -> LEDRingController (broadcast)
 const uint8_t MSG_COMPONENT_STATUS = 0xB4; // MainController -> CaregiverApp (broadcast)
 const uint8_t MSG_DETECTION_MODE   = 0xB5; // CaregiverApp -> MainController
+const uint8_t MSG_LED_RENDER_FRAME = 0xB6; // MainController -> LEDRingController (broadcast)
 
 const uint8_t COMPONENT_MAIN_CONTROLLER = 1;
 const uint8_t DETECTION_MODE_DIRECT = 0;
 const uint8_t DETECTION_MODE_CARTESIAN_GRID = 1;
 const uint8_t DETECTION_MODE_POLAR_GRID = 2;
+
+const uint8_t LED_COLOR_OFF = 0;
+const uint8_t LED_COLOR_RED = 1;
+const uint8_t LED_COLOR_ORANGE = 2;
+const uint8_t LED_COLOR_YELLOW = 3;
+
+const uint8_t LED_RENDER_MODE_SECTOR_FILL = 0;
+const uint8_t LED_RENDER_MODE_RADAR = 1;
 
 // Sent by CaregiverApp when the caregiver changes settings in the browser UI.
 struct ConfigPacket
@@ -98,6 +107,16 @@ struct DetectionModePacket
   uint8_t mode;              // 0=direct, 1=cartesian, 2=polar
 } __attribute__((packed));   // 2 bytes
 
+struct LedRenderFramePacket
+{
+  uint8_t msg_type;              // MSG_LED_RENDER_FRAME
+  uint8_t render_mode;           // 0=sector-fill, 1=radar
+  uint8_t num_zones;             // 4, 6, or 8
+  uint8_t brightness;            // 0-64
+  uint8_t center_color;          // LED_COLOR_*
+  uint8_t ring_zone_colors[6][8]; // ring index 0..5 => rings 1..6, zone 0..7
+} __attribute__((packed));
+
 static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 Sensor sensors[NUM_SENSORS];
@@ -107,11 +126,9 @@ uint32_t lastSensorTimestampMs[NUM_SENSORS] = {0};
 volatile uint8_t sensorPendingProcess[NUM_SENSORS] = {0};
 uint32_t lastRxMsBySensor[NUM_SENSORS] = {0};
 float rxHzBySensor[NUM_SENSORS] = {0.0f};
-uint32_t convertUsLastBySensor[NUM_SENSORS] = {0};
-float convertUsAvgBySensor[NUM_SENSORS] = {0.0f};
 uint32_t lastStatusEmitMs = 0;
-const uint32_t STATUS_EMIT_PERIOD_MS = 500;
-const uint32_t SENSOR_STALE_TIMEOUT_MS = 400;
+uint32_t statusEmitPeriodMs = 500;
+uint32_t sensorStaleTimeoutMs = 400;
 
 // ── Beta: proximity detection state ──────────────────────────────────────────
 int     proximityNumZones       = 6;
@@ -121,6 +138,7 @@ uint8_t proximityActiveSectors  = 0xFF; // all zones on by default
 // Ring distance thresholds (mm) — updated by ConfigPacket
 float proximityDistRings[5] = {300.0f, 600.0f, 1050.0f, 1500.0f, 1950.0f};
 uint8_t proximityDetectionMode = DETECTION_MODE_POLAR_GRID;
+uint8_t proximityLedRenderMode = LED_RENDER_MODE_SECTOR_FILL;
 
 // Occupancy grid parameters (wheelchair/body frame, mm):
 // - X axis: forward, sampled over [OCC_X_MIN_MM, OCC_X_MAX_MM)
@@ -141,10 +159,10 @@ const int OCC_GRID_CELL_COUNT = OCC_GRID_COLS * OCC_GRID_ROWS; // 900
 // - OCC_CONF_RISE increments confidence when a cell is hit in this frame
 // - OCC_CONF_DECAY decrements confidence when a cell is not hit
 // - OCC_ENTER_THRESHOLD / OCC_EXIT_THRESHOLD provide hysteresis for stable occupied/free state
-const uint8_t OCC_CONF_RISE = 90;
-const uint8_t OCC_CONF_DECAY = 24;
-const uint8_t OCC_ENTER_THRESHOLD = 120;
-const uint8_t OCC_EXIT_THRESHOLD = 80;
+uint8_t occConfRise = 90;
+uint8_t occConfDecay = 24;
+uint8_t occEnterThreshold = 120;
+uint8_t occExitThreshold = 80;
 
 uint8_t occConfidence[OCC_GRID_CELL_COUNT] = {0};
 uint8_t occOccupied[OCC_GRID_CELL_COUNT] = {0};
@@ -152,16 +170,18 @@ uint8_t occOccupied[OCC_GRID_CELL_COUNT] = {0};
 const int POLAR_NUM_RINGS = 6;
 const int POLAR_MAX_ZONES = 8;
 const int POLAR_BIN_COUNT = POLAR_NUM_RINGS * POLAR_MAX_ZONES; // 48
-const uint8_t POLAR_CONF_RISE = 90;
-const uint8_t POLAR_CONF_DECAY = 24;
-const uint8_t POLAR_ENTER_THRESHOLD = 120;
-const uint8_t POLAR_EXIT_THRESHOLD = 80;
+uint8_t polarConfRise = 90;
+uint8_t polarConfDecay = 24;
+uint8_t polarEnterThreshold = 120;
+uint8_t polarExitThreshold = 80;
 uint8_t polarConfidence[POLAR_BIN_COUNT] = {0};
 uint8_t polarOccupied[POLAR_BIN_COUNT] = {0};
 
 uint32_t lastProximityBroadcastMs = 0;
-const uint32_t PROXIMITY_PERIOD_MS = 67; // ~15 Hz
+uint32_t proximityPeriodMs = 67; // ~15 Hz
 uint8_t  broadcastPeerAdded = 0;
+char serialCmdBuffer[200] = {0};
+uint16_t serialCmdLen = 0;
 
 // Forward declarations for proximity helpers (defined before setup())
 void applyProximityThresholds(float redMaxMm, float yellowMaxMm);
@@ -180,6 +200,10 @@ int proximityRingIndexFromDistance(float distMm);
 float proximityRepresentativeDistanceForRing(int ringIndex);
 void emitDetectionDebugFrame(const float closestMmByZone[8]);
 static int proximityZoneIndex(float angleDeg, int numZones);
+void broadcastLedRenderFrame(const float closestMmByZone[8]);
+void emitTuningConfigLine();
+void handleSerialCommand(char *line);
+void serviceSerialCommands();
 void broadcastComponentStatus();
 
 int findSensorIndex(uint8_t id)
@@ -209,22 +233,7 @@ void configureSensors()
 
 void convertPacketToPoints(int sensorIndex)
 {
-  // Measure only XYZ conversion time for one sensor packet (16 cells).
-  uint32_t t0 = micros();
   sensors[sensorIndex].computeLatestWorldPoints();
-  uint32_t dtUs = micros() - t0;
-  convertUsLastBySensor[sensorIndex] = dtUs;
-
-  // Exponential moving average for steadier reporting in the status stream.
-  if (convertUsAvgBySensor[sensorIndex] <= 0.0f)
-  {
-    convertUsAvgBySensor[sensorIndex] = (float)dtUs;
-  }
-  else
-  {
-    convertUsAvgBySensor[sensorIndex] =
-        (0.85f * convertUsAvgBySensor[sensorIndex]) + (0.15f * (float)dtUs);
-  }
 }
 
 void emitPointsForSensor(int sensorIndex)
@@ -279,7 +288,7 @@ void processPendingSensors()
 void emitReceiverStatusIfDue()
 {
   uint32_t nowMs = millis();
-  if ((nowMs - lastStatusEmitMs) < STATUS_EMIT_PERIOD_MS)
+  if ((nowMs - lastStatusEmitMs) < statusEmitPeriodMs)
   {
     return;
   }
@@ -287,17 +296,13 @@ void emitReceiverStatusIfDue()
 
   for (int i = 0; i < NUM_SENSORS; i++)
   {
-    // S,sid,pkts,rx_hz,conv_us_last,conv_us_avg
+    // S,sid,pkts,rx_hz
     Serial.print("S,");
     Serial.print(SENSOR_IDS[i]);
     Serial.print(",");
     Serial.print(packetCountBySensor[i]);
     Serial.print(",");
-    Serial.print(rxHzBySensor[i], 2);
-    Serial.print(",");
-    Serial.print(convertUsLastBySensor[i]);
-    Serial.print(",");
-    Serial.println(convertUsAvgBySensor[i], 1);
+    Serial.println(rxHzBySensor[i], 2);
   }
 
   if (broadcastPeerAdded)
@@ -412,7 +417,7 @@ void invalidateStaleSensors()
   {
     if (!sensorSeen[i]) continue;
     uint32_t ageMs = nowMs - lastRxMsBySensor[i];
-    if (ageMs <= SENSOR_STALE_TIMEOUT_MS) continue;
+    if (ageMs <= sensorStaleTimeoutMs) continue;
 
     sensorSeen[i] = 0;
     sensorPendingProcess[i] = 0;
@@ -500,17 +505,17 @@ void updateOccupancyGrid(const uint8_t hitMask[OCC_GRID_CELL_COUNT])
     uint8_t conf = occConfidence[i];
     if (hitMask[i])
     {
-      uint16_t boosted = (uint16_t)conf + OCC_CONF_RISE;
+      uint16_t boosted = (uint16_t)conf + occConfRise;
       conf = (boosted > 255U) ? 255U : (uint8_t)boosted;
     }
     else
     {
-      conf = (conf > OCC_CONF_DECAY) ? (uint8_t)(conf - OCC_CONF_DECAY) : 0;
+      conf = (conf > occConfDecay) ? (uint8_t)(conf - occConfDecay) : 0;
     }
     occConfidence[i] = conf;
 
-    if (!occOccupied[i] && conf >= OCC_ENTER_THRESHOLD) occOccupied[i] = 1;
-    else if (occOccupied[i] && conf <= OCC_EXIT_THRESHOLD) occOccupied[i] = 0;
+    if (!occOccupied[i] && conf >= occEnterThreshold) occOccupied[i] = 1;
+    else if (occOccupied[i] && conf <= occExitThreshold) occOccupied[i] = 0;
   }
 }
 
@@ -547,17 +552,17 @@ void updatePolarGrid(const uint8_t hitMask[POLAR_BIN_COUNT])
     uint8_t conf = polarConfidence[i];
     if (hitMask[i])
     {
-      uint16_t boosted = (uint16_t)conf + POLAR_CONF_RISE;
+      uint16_t boosted = (uint16_t)conf + polarConfRise;
       conf = (boosted > 255U) ? 255U : (uint8_t)boosted;
     }
     else
     {
-      conf = (conf > POLAR_CONF_DECAY) ? (uint8_t)(conf - POLAR_CONF_DECAY) : 0;
+      conf = (conf > polarConfDecay) ? (uint8_t)(conf - polarConfDecay) : 0;
     }
     polarConfidence[i] = conf;
 
-    if (!polarOccupied[i] && conf >= POLAR_ENTER_THRESHOLD) polarOccupied[i] = 1;
-    else if (polarOccupied[i] && conf <= POLAR_EXIT_THRESHOLD) polarOccupied[i] = 0;
+    if (!polarOccupied[i] && conf >= polarEnterThreshold) polarOccupied[i] = 1;
+    else if (polarOccupied[i] && conf <= polarExitThreshold) polarOccupied[i] = 0;
   }
 }
 
@@ -753,6 +758,279 @@ void broadcastZoneProximity()
 
   emitDetectionDebugFrame(closestMmByZone);
   esp_now_send(BROADCAST_MAC, (uint8_t *)&pkt, sizeof(pkt));
+  broadcastLedRenderFrame(closestMmByZone);
+}
+
+static uint8_t ringIndexToLedColor(int ringIndex)
+{
+  // ringIndex 0..5 => rings 1..6
+  if (ringIndex <= 1) return LED_COLOR_RED;
+  if (ringIndex <= 3) return LED_COLOR_ORANGE;
+  return LED_COLOR_YELLOW;
+}
+
+void broadcastLedRenderFrame(const float closestMmByZone[8])
+{
+  LedRenderFramePacket pkt = {};
+  pkt.msg_type = MSG_LED_RENDER_FRAME;
+  pkt.render_mode = proximityLedRenderMode;
+  pkt.num_zones = (uint8_t)proximityNumZones;
+  pkt.brightness = (uint8_t)proximityBrightness;
+  pkt.center_color = LED_COLOR_OFF;
+
+  for (int z = 0; z < proximityNumZones && z < 8; z++)
+  {
+    float dist = closestMmByZone[z];
+    if (dist >= 3000.0f) continue;
+
+    int ringIdx = proximityRingIndexFromDistance(dist);
+    if (ringIdx < 0 || ringIdx > 5) continue;
+    uint8_t color = ringIndexToLedColor(ringIdx);
+
+    if (ringIdx == 0)
+    {
+      pkt.center_color = color;
+    }
+
+    if (proximityLedRenderMode == LED_RENDER_MODE_RADAR)
+    {
+      pkt.ring_zone_colors[ringIdx][z] = color;
+    }
+    else
+    {
+      // Sector mode: fill the full outward sector region (rings 2..6)
+      // with the closest obstacle color.
+      for (int r = 1; r <= 5; r++) pkt.ring_zone_colors[r][z] = color;
+    }
+  }
+
+  esp_now_send(BROADCAST_MAC, (uint8_t *)&pkt, sizeof(pkt));
+}
+
+static int clampInt(int v, int lo, int hi)
+{
+  if (v < lo) return lo;
+  if (v > hi) return hi;
+  return v;
+}
+
+void emitTuningConfigLine()
+{
+  int redMm = (int)proximityDistRings[1];
+  int yellowMm = (int)proximityDistRings[3];
+  Serial.print("CFG,mode,");
+  Serial.print((int)proximityDetectionMode);
+  Serial.print(",zones,");
+  Serial.print((int)proximityNumZones);
+  Serial.print(",bright,");
+  Serial.print((int)proximityBrightness);
+  Serial.print(",visual,");
+  Serial.print(proximityVisualEnabled ? 1 : 0);
+  Serial.print(",sectors_mask,");
+  Serial.print((int)proximityActiveSectors);
+  Serial.print(",red_mm,");
+  Serial.print(redMm);
+  Serial.print(",yellow_mm,");
+  Serial.print(yellowMm);
+  Serial.print(",stale_ms,");
+  Serial.print((int)sensorStaleTimeoutMs);
+  Serial.print(",status_ms,");
+  Serial.print((int)statusEmitPeriodMs);
+  Serial.print(",proximity_ms,");
+  Serial.print((int)proximityPeriodMs);
+  Serial.print(",led_mode,");
+  Serial.print((int)proximityLedRenderMode);
+  Serial.print(",occ_rise,");
+  Serial.print((int)occConfRise);
+  Serial.print(",occ_decay,");
+  Serial.print((int)occConfDecay);
+  Serial.print(",occ_enter,");
+  Serial.print((int)occEnterThreshold);
+  Serial.print(",occ_exit,");
+  Serial.print((int)occExitThreshold);
+  Serial.print(",polar_rise,");
+  Serial.print((int)polarConfRise);
+  Serial.print(",polar_decay,");
+  Serial.print((int)polarConfDecay);
+  Serial.print(",polar_enter,");
+  Serial.print((int)polarEnterThreshold);
+  Serial.print(",polar_exit,");
+  Serial.println((int)polarExitThreshold);
+}
+
+void handleSerialCommand(char *line)
+{
+  if (line == nullptr || line[0] == '\0') return;
+
+  if (strcmp(line, "GET") == 0)
+  {
+    emitTuningConfigLine();
+    return;
+  }
+
+  if (strcmp(line, "HELP") == 0)
+  {
+    Serial.println("HELP,GET|SET,<key>,<value>");
+    return;
+  }
+
+  if (strncmp(line, "SET,", 4) != 0) return;
+
+  char *savePtr = nullptr;
+  (void)strtok_r(line, ",", &savePtr); // "SET"
+  char *key = strtok_r(nullptr, ",", &savePtr);
+  char *value = strtok_r(nullptr, ",", &savePtr);
+  if (key == nullptr || value == nullptr)
+  {
+    Serial.println("ERR,SET,missing_key_or_value");
+    return;
+  }
+
+  char *endPtr = nullptr;
+  long raw = strtol(value, &endPtr, 10);
+  if (endPtr == value)
+  {
+    Serial.println("ERR,SET,invalid_value");
+    return;
+  }
+
+  bool updated = true;
+  if (strcmp(key, "mode") == 0)
+  {
+    int mode = clampInt((int)raw, 0, 2);
+    proximityDetectionMode = (uint8_t)mode;
+    clearOccupancyGrid();
+    clearPolarGrid();
+  }
+  else if (strcmp(key, "zones") == 0)
+  {
+    int zones = (int)raw;
+    if (zones != 4 && zones != 6 && zones != 8) updated = false;
+    else proximityNumZones = zones;
+  }
+  else if (strcmp(key, "bright") == 0)
+  {
+    proximityBrightness = clampInt((int)raw, 0, 64);
+  }
+  else if (strcmp(key, "visual") == 0)
+  {
+    proximityVisualEnabled = (raw != 0);
+    if (!proximityVisualEnabled)
+    {
+      clearOccupancyGrid();
+      clearPolarGrid();
+    }
+  }
+  else if (strcmp(key, "sectors_mask") == 0)
+  {
+    proximityActiveSectors = (uint8_t)(raw & 0xFF);
+  }
+  else if (strcmp(key, "red_mm") == 0)
+  {
+    int yellowMm = (int)proximityDistRings[3];
+    int redMm = clampInt((int)raw, 50, 2990);
+    if (redMm >= yellowMm) redMm = yellowMm - 10;
+    redMm = clampInt(redMm, 50, 2990);
+    applyProximityThresholds((float)redMm, (float)yellowMm);
+  }
+  else if (strcmp(key, "yellow_mm") == 0)
+  {
+    int redMm = (int)proximityDistRings[1];
+    int yellowMm = clampInt((int)raw, 60, 3000);
+    if (yellowMm <= redMm) yellowMm = redMm + 10;
+    yellowMm = clampInt(yellowMm, 60, 3000);
+    applyProximityThresholds((float)redMm, (float)yellowMm);
+  }
+  else if (strcmp(key, "stale_ms") == 0)
+  {
+    sensorStaleTimeoutMs = (uint32_t)clampInt((int)raw, 50, 10000);
+  }
+  else if (strcmp(key, "status_ms") == 0)
+  {
+    statusEmitPeriodMs = (uint32_t)clampInt((int)raw, 100, 10000);
+  }
+  else if (strcmp(key, "proximity_ms") == 0)
+  {
+    proximityPeriodMs = (uint32_t)clampInt((int)raw, 20, 2000);
+  }
+  else if (strcmp(key, "led_mode") == 0)
+  {
+    proximityLedRenderMode = (uint8_t)clampInt((int)raw, 0, 1);
+  }
+  else if (strcmp(key, "occ_rise") == 0)
+  {
+    occConfRise = (uint8_t)clampInt((int)raw, 1, 255);
+  }
+  else if (strcmp(key, "occ_decay") == 0)
+  {
+    occConfDecay = (uint8_t)clampInt((int)raw, 0, 255);
+  }
+  else if (strcmp(key, "occ_enter") == 0)
+  {
+    occEnterThreshold = (uint8_t)clampInt((int)raw, 1, 255);
+    if (occExitThreshold >= occEnterThreshold) occExitThreshold = occEnterThreshold - 1;
+  }
+  else if (strcmp(key, "occ_exit") == 0)
+  {
+    occExitThreshold = (uint8_t)clampInt((int)raw, 0, 254);
+    if (occExitThreshold >= occEnterThreshold) occEnterThreshold = occExitThreshold + 1;
+  }
+  else if (strcmp(key, "polar_rise") == 0)
+  {
+    polarConfRise = (uint8_t)clampInt((int)raw, 1, 255);
+  }
+  else if (strcmp(key, "polar_decay") == 0)
+  {
+    polarConfDecay = (uint8_t)clampInt((int)raw, 0, 255);
+  }
+  else if (strcmp(key, "polar_enter") == 0)
+  {
+    polarEnterThreshold = (uint8_t)clampInt((int)raw, 1, 255);
+    if (polarExitThreshold >= polarEnterThreshold) polarExitThreshold = polarEnterThreshold - 1;
+  }
+  else if (strcmp(key, "polar_exit") == 0)
+  {
+    polarExitThreshold = (uint8_t)clampInt((int)raw, 0, 254);
+    if (polarExitThreshold >= polarEnterThreshold) polarEnterThreshold = polarExitThreshold + 1;
+  }
+  else
+  {
+    updated = false;
+  }
+
+  if (!updated)
+  {
+    Serial.print("ERR,SET,unknown_or_invalid_key,");
+    Serial.println(key);
+    return;
+  }
+
+  Serial.print("ACK,");
+  Serial.print(key);
+  Serial.print(",");
+  Serial.println((int)raw);
+  emitTuningConfigLine();
+}
+
+void serviceSerialCommands()
+{
+  while (Serial.available() > 0)
+  {
+    char ch = (char)Serial.read();
+    if (ch == '\r') continue;
+    if (ch == '\n')
+    {
+      serialCmdBuffer[serialCmdLen] = '\0';
+      if (serialCmdLen > 0) handleSerialCommand(serialCmdBuffer);
+      serialCmdLen = 0;
+      continue;
+    }
+
+    if (serialCmdLen < (sizeof(serialCmdBuffer) - 1))
+    {
+      serialCmdBuffer[serialCmdLen++] = ch;
+    }
+  }
 }
 
 void setup()
@@ -780,6 +1058,7 @@ void setup()
 
   Serial.printf("[Config] detection_mode=%d (0=direct,1=cartesian,2=polar)\n",
                 (int)proximityDetectionMode);
+  emitTuningConfigLine();
 
   esp_now_register_recv_cb(OnDataRecv);
 
@@ -802,6 +1081,7 @@ void setup()
 
 void loop()
 {
+  serviceSerialCommands();
   invalidateStaleSensors();
   processPendingSensors();
   emitReceiverStatusIfDue();
@@ -810,7 +1090,7 @@ void loop()
   if (proximityVisualEnabled && broadcastPeerAdded)
   {
     uint32_t nowMs = millis();
-    if ((nowMs - lastProximityBroadcastMs) >= PROXIMITY_PERIOD_MS)
+    if ((nowMs - lastProximityBroadcastMs) >= proximityPeriodMs)
     {
       lastProximityBroadcastMs = nowMs;
       broadcastZoneProximity();
