@@ -63,6 +63,7 @@ const uint8_t DETECTION_MODE_POLAR_GRID = 2;
 
 const uint8_t LED_RENDER_MODE_SECTOR_FILL = 0;
 const uint8_t LED_RENDER_MODE_RADAR = 1;
+const uint8_t LED_BRIGHTNESS_MAX = (uint8_t)RuntimeDefaults::kMaxBrightness;
 const float NO_OBSTACLE_MM = 1.0e9f;
 
 // Sent by CaregiverApp when the caregiver changes settings in the browser UI.
@@ -70,7 +71,7 @@ struct ConfigPacket
 {
   uint8_t  msg_type;           // MSG_CONFIG
   uint8_t  zone_mode;          // 4, 6, or 8
-  uint8_t  brightness;         // 0–64
+  uint8_t  brightness;         // 0-255 (capped at 50%)
   uint16_t red_threshold_mm;
   uint16_t orange_threshold_mm;
   uint16_t yellow_threshold_mm;
@@ -351,7 +352,7 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
     {
       if (cfg.zone_mode == 4 || cfg.zone_mode == 6 || cfg.zone_mode == 8)
         proximityNumZones = cfg.zone_mode;
-      proximityBrightness    = cfg.brightness;
+      proximityBrightness    = clampInt((int)cfg.brightness, 0, (int)LED_BRIGHTNESS_MAX);
       proximityVisualEnabled = (cfg.visual_enabled != 0);
       proximityLedRenderMode = (uint8_t)clampInt((int)cfg.render_mode, 0, 1);
       proximityActiveSectors = cfg.active_sectors;
@@ -517,6 +518,17 @@ void applyProximityThresholds(float redMaxMm, float orangeMaxMm, float yellowMax
 static int proximityZoneIndex(float angleDeg, int numZones)
 {
   if (numZones <= 0) return -1;
+
+  if (numZones == 6)
+  {
+    if (angleDeg >= -30.0f && angleDeg < 30.0f) return 0;    // AHEAD
+    if (angleDeg >= 30.0f && angleDeg <= 90.0f) return 1;    // TOP_RIGHT
+    if (angleDeg > 90.0f && angleDeg < 150.0f) return 2;     // BOTTOM_RIGHT
+    if (angleDeg < -150.0f || angleDeg >= 150.0f) return 3;  // BEHIND
+    if (angleDeg >= -150.0f && angleDeg < -90.0f) return 4;  // BOTTOM_LEFT
+    return 5;                                                 // TOP_LEFT
+  }
+
   const float step = 360.0f / (float)numZones;
   int idx = (int)floorf((angleDeg + (0.5f * step)) / step);
   idx %= numZones;
@@ -904,7 +916,7 @@ void handleSerialCommand(char *line)
   }
   else if (strcmp(key, "bright") == 0)
   {
-    proximityBrightness = clampInt((int)raw, 0, 64);
+    proximityBrightness = clampInt((int)raw, 0, (int)LED_BRIGHTNESS_MAX);
   }
   else if (strcmp(key, "visual") == 0)
   {

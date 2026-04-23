@@ -12,6 +12,6 @@
 // Sent from MainController to LEDRingController for live render,
 // and from CaregiverApp for preview mode.
 typedef struct __attribute__((packed)) {
-  uint8_t brightness;   // 0-64
+  uint8_t brightness;   // 0-255 (runtime max currently capped to 50%)
   uint8_t leds[93];     // per-LED color code (LED_COLOR_*)
 } LedFrame_t;           // 94 bytes

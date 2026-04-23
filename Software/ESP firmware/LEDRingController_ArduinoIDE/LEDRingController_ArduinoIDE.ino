@@ -24,6 +24,8 @@
 
 const uint8_t MSG_COMPONENT_STATUS = 0xB4;
 const uint8_t COMPONENT_LED_CONTROLLER = 2;
+const uint8_t LED_BRIGHTNESS_DEFAULT = 26;   // UI default 20% (of capped 50% max)
+const uint8_t LED_BRIGHTNESS_MAX = 128;      // 50%
 static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 struct __attribute__((packed)) ComponentStatusPacket {
@@ -39,29 +41,25 @@ bool visualEnabled = true;
 uint32_t lastHeartbeatMs = 0;
 const uint32_t HEARTBEAT_PERIOD_MS = 1000;
 
-static uint32_t applyBrightness(uint32_t base, uint8_t brightness) {
-  uint8_t r = ((base >> 16) & 0xFF) * brightness / 255;
-  uint8_t g = ((base >> 8) & 0xFF) * brightness / 255;
-  uint8_t b = ((base) & 0xFF) * brightness / 255;
-  return strip.Color(r, g, b);
-}
-
-static uint32_t resolveColor(uint8_t code, uint8_t brightness) {
+static uint32_t resolveColor(uint8_t code) {
   switch (code) {
-    case LED_COLOR_RED:    return applyBrightness(0xFF0000, brightness);
-    case LED_COLOR_ORANGE: return applyBrightness(0xFF5500, brightness);
-    case LED_COLOR_YELLOW: return applyBrightness(0xFFEE00, brightness);
-    case LED_COLOR_GREEN:  return applyBrightness(0x00CC55, brightness);
-    case LED_COLOR_BLUE:   return applyBrightness(0x0066FF, brightness);
+    case LED_COLOR_RED:    return strip.Color(255, 0, 0); //R,G,B
+    case LED_COLOR_ORANGE: return strip.Color(255, 50, 0);
+    case LED_COLOR_YELLOW: return strip.Color(255, 221, 0);
+    case LED_COLOR_GREEN:  return strip.Color(15, 138, 15);
+    case LED_COLOR_BLUE:   return strip.Color(0, 85, 255);
     default:               return 0;
   }
 }
 
 static void applyFrame(const LedFrame_t& frame) {
+  uint8_t brightness = frame.brightness;
+  if (brightness > LED_BRIGHTNESS_MAX) brightness = LED_BRIGHTNESS_MAX;
+  strip.setBrightness(brightness);
   strip.clear();
   for (int i = 0; i < NUM_LEDS; i++) {
     if (frame.leds[i] == LED_COLOR_OFF) continue;
-    strip.setPixelColor(i, resolveColor(frame.leds[i], frame.brightness));
+    strip.setPixelColor(i, resolveColor(frame.leds[i]));
   }
   strip.show();
 }
@@ -103,7 +101,7 @@ void setup() {
   Serial.begin(115200);
 
   strip.begin();
-  strip.setBrightness(255);
+  strip.setBrightness(LED_BRIGHTNESS_DEFAULT);
   strip.show();
 
   WiFi.mode(WIFI_STA);

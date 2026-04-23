@@ -70,7 +70,7 @@ const bool ENABLE_NAV_AUDIO_PLAYBACK = false;
 struct __attribute__((packed)) ConfigPacket {
   uint8_t  msg_type;           // MSG_CONFIG
   uint8_t  zone_mode;          // 4, 6, or 8
-  uint8_t  brightness;         // 0–64
+  uint8_t  brightness;         // 0-255 (capped at 50%)
   uint16_t red_threshold_mm;
   uint16_t orange_threshold_mm;
   uint16_t yellow_threshold_mm;
@@ -102,14 +102,14 @@ const char* WIFI_SSID = "ViviSense";
 const char* WIFI_PASS = "ViviSense123";
 
 // ── Runtime state ─────────────────────────────────────────────────────────────
-int currentBrightness = 64;   // 0–64  (maps from 0–100% slider, capped at 25% of LED max)
+int currentBrightness = 26;   // UI default 20% (of capped 50% max)
 int currentZoneMode   = 6;    // 4, 6, or 8
 int currentVolume     = 255;  // 0–255
 
 // ── Preview state (Display button on UI) ──────────────────────────────────────
 bool  previewMode           = false;
 int   previewZoneMode       = 6;
-int   previewBrightness     = 64;
+int   previewBrightness     = 26;
 float previewRedMm          = 600.0f;
 float previewOrangeMm       = 1050.0f;
 float previewYellowMm       = 1500.0f;
@@ -124,6 +124,18 @@ uint32_t lastLedControllerStatusMs = 0;
 uint32_t lastWsStatusBroadcastMs = 0;
 const uint32_t COMPONENT_TIMEOUT_MS = 1500;
 const uint32_t WS_STATUS_PERIOD_MS = 500;
+static constexpr int BRIGHTNESS_MAX_RAW = 128;     // 50%
+static int brightnessRawFromPercent(float percent)
+{
+  float clampedPercent = constrain(percent, 0.0f, 100.0f);
+  int raw = (int)lroundf((clampedPercent / 100.0f) * (float)BRIGHTNESS_MAX_RAW);
+  return constrain(raw, 0, BRIGHTNESS_MAX_RAW);
+}
+static int brightnessPercentFromRaw(int raw)
+{
+  int clampedRaw = constrain(raw, 0, BRIGHTNESS_MAX_RAW);
+  return (int)lroundf((float)clampedRaw * (100.0f / (float)BRIGHTNESS_MAX_RAW));
+}
 
 bool audioEnabled  = true;   // play audio during obstacle detection
 bool visualEnabled = true;   // light LEDs during obstacle detection
@@ -150,36 +162,36 @@ int ring1_any[] = {92, -1};
 //                 BEHIND / BOTTOM_LEFT / TOP_LEFT)
 // =========================================================
 int r2_6_AHEAD[]        = {84, -1};
-int r2_6_TOP_RIGHT[]    = {85, -1};
-int r2_6_BOTTOM_RIGHT[] = {86, 87, -1};
+int r2_6_TOP_RIGHT[]    = {85, 86, -1};
+int r2_6_BOTTOM_RIGHT[] = {87, -1};
 int r2_6_BEHIND[]       = {88, -1};
 int r2_6_BOTTOM_LEFT[]  = {89, 90, -1};
 int r2_6_TOP_LEFT[]     = {91, -1};
 
 int r3_6_AHEAD[]        = {72, -1};
-int r3_6_TOP_RIGHT[]    = {73, 74, -1};
-int r3_6_BOTTOM_RIGHT[] = {75, 76, 77, -1};
+int r3_6_TOP_RIGHT[]    = {73, 74, 75, -1};
+int r3_6_BOTTOM_RIGHT[] = {76, 77, -1};
 int r3_6_BEHIND[]       = {78, -1};
 int r3_6_BOTTOM_LEFT[]  = {79, 80, -1};
 int r3_6_TOP_LEFT[]     = {81, 82, 83, -1};
 
 int r4_6_AHEAD[]        = {56, 57, 71, -1};
-int r4_6_TOP_RIGHT[]    = {58, 59, -1};
-int r4_6_BOTTOM_RIGHT[] = {60, 61, 62, -1};
+int r4_6_TOP_RIGHT[]    = {58, 59, 60, -1};
+int r4_6_BOTTOM_RIGHT[] = {61, 62, -1};
 int r4_6_BEHIND[]       = {63, 64, 65, -1};
 int r4_6_BOTTOM_LEFT[]  = {66, 67, -1};
 int r4_6_TOP_LEFT[]     = {68, 69, 70, -1};
 
 int r5_6_AHEAD[]        = {32, 33, 55, -1};
-int r5_6_TOP_RIGHT[]    = {34, 35, 36, 37, -1};
-int r5_6_BOTTOM_RIGHT[] = {38, 39, 40, 41, -1};
+int r5_6_TOP_RIGHT[]    = {34, 35, 36, 37, 38, -1};
+int r5_6_BOTTOM_RIGHT[] = {39, 40, 41, -1};
 int r5_6_BEHIND[]       = {42, 43, 44, -1};
 int r5_6_BOTTOM_LEFT[]  = {45, 46, 47, 48, -1};
 int r5_6_TOP_LEFT[]     = {49, 50, 51, 52, 53, 54, -1};
 
 int r6_6_AHEAD[]        = {29, 30, 31, 0, 1, -1};
-int r6_6_TOP_RIGHT[]    = {2, 3, 4, 5, 6, 7, -1};
-int r6_6_BOTTOM_RIGHT[] = {8, 9, 10, 11, 12, -1};
+int r6_6_TOP_RIGHT[]    = {2, 3, 4, 5, 6, 7, 8, -1};
+int r6_6_BOTTOM_RIGHT[] = {9, 10, 11, 12, -1};
 int r6_6_BEHIND[]       = {13, 14, 15, 16, -1};
 int r6_6_BOTTOM_LEFT[]  = {17, 18, 19, 20, 21, 22, -1};
 int r6_6_TOP_LEFT[]     = {23, 24, 25, 26, 27, 28, -1};
@@ -500,8 +512,8 @@ int* getZone4(int ring, float angleDeg) {
 int* getZone6(int ring, float angleDeg) {
   int zone;
   if      (angleDeg >= -30  && angleDeg <  30)  zone = 1; // AHEAD
-  else if (angleDeg >=  30  && angleDeg <  90)  zone = 2; // TOP_RIGHT
-  else if (angleDeg >=  90  && angleDeg < 150)  zone = 3; // BOTTOM_RIGHT
+  else if (angleDeg >=  30  && angleDeg <=  90)  zone = 2; // TOP_RIGHT
+  else if (angleDeg >   90  && angleDeg < 150)  zone = 3; // BOTTOM_RIGHT
   else if (angleDeg <  -150 || angleDeg >= 150) zone = 4; // BEHIND
   else if (angleDeg >= -150 && angleDeg < -90)  zone = 5; // BOTTOM_LEFT
   else                                           zone = 6; // TOP_LEFT
@@ -600,8 +612,8 @@ int getZoneIndex(float angleDeg, int zoneMode) {
   }
   // 6 zones
   if (angleDeg >= -30  && angleDeg <  30)  return 0; // AHEAD
-  if (angleDeg >=  30  && angleDeg <  90)  return 1; // TOP_RIGHT
-  if (angleDeg >=  90  && angleDeg < 150)  return 2; // BOTTOM_RIGHT
+  if (angleDeg >=  30  && angleDeg <=  90) return 1; // TOP_RIGHT
+  if (angleDeg >   90  && angleDeg < 150) return 2; // BOTTOM_RIGHT
   if (angleDeg < -150  || angleDeg >= 150) return 3; // BEHIND
   if (angleDeg >= -150 && angleDeg < -90)  return 4; // BOTTOM_LEFT
   return 5; // TOP_LEFT
@@ -747,7 +759,7 @@ void handleWebSocketMessage(const char* msg) {
       if (mode == 4 || mode == 6 || mode == 8) currentZoneMode = mode;
     }
     if (!doc["brightness"].isNull()) {
-      currentBrightness = constrain((int)(doc["brightness"].as<float>() * 0.64f), 0, 64);
+      currentBrightness = brightnessRawFromPercent(doc["brightness"].as<float>());
     }
     if (!doc["redThreshold"].isNull() && !doc["orangeThreshold"].isNull() && !doc["yellowThreshold"].isNull()) {
       float redMm = doc["redThreshold"].as<float>() * 10.0f;
@@ -777,7 +789,7 @@ void handleWebSocketMessage(const char* msg) {
       }
     }
     Serial.printf("[Config] zoneMode=%d  brightness=%d%%  audio=%s  visual=%s\n",
-                  currentZoneMode, (int)(currentBrightness / 0.64f),
+                  currentZoneMode, brightnessPercentFromRaw(currentBrightness),
                   audioEnabled ? "on" : "off", visualEnabled ? "on" : "off");
 
     // Relay updated settings to MainController so its zone computation matches
@@ -813,7 +825,7 @@ void handleWebSocketMessage(const char* msg) {
       if (mode == 4 || mode == 6 || mode == 8) previewZoneMode = mode;
 
       if (!doc["brightness"].isNull()) {
-        previewBrightness = constrain((int)(doc["brightness"].as<float>() * 0.64f), 0, 64);
+        previewBrightness = brightnessRawFromPercent(doc["brightness"].as<float>());
       }
       if (!doc["redThreshold"].isNull() && !doc["orangeThreshold"].isNull() && !doc["yellowThreshold"].isNull()) {
         float rMm = doc["redThreshold"].as<float>() * 10.0f;
@@ -833,7 +845,7 @@ void handleWebSocketMessage(const char* msg) {
 
       lightPreview();
       Serial.printf("[Preview] zoneMode=%d  brightness=%d%%  red=%.0fmm  orange=%.0fmm  yellow=%.0fmm\n",
-                    previewZoneMode, (int)(previewBrightness / 0.64f),
+                    previewZoneMode, brightnessPercentFromRaw(previewBrightness),
                     previewRedMm, previewOrangeMm, previewYellowMm);
     }
 
@@ -875,7 +887,7 @@ void sendStatus(AsyncWebSocketClient* client) {
   JsonDocument doc;
   doc["type"]           = "status";
   doc["zoneMode"]       = currentZoneMode;
-  doc["brightness"]     = (int)(currentBrightness / 0.64f);
+  doc["brightness"]     = brightnessPercentFromRaw(currentBrightness);
   doc["redThreshold"]   = (int)(DIST_RING2 / 10.0f);
   doc["orangeThreshold"]= (int)(DIST_RING3 / 10.0f);
   doc["yellowThreshold"]= (int)(DIST_RING4 / 10.0f);
