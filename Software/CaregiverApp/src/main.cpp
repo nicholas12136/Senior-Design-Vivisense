@@ -40,8 +40,6 @@
 #include <SPIFFS.h>
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
-#include "driver/i2s.h"
-#include "sounds.h"
 #include "led_frame.h"
 #include <math.h>
 
@@ -65,8 +63,6 @@ const uint8_t COMPONENT_LED_CONTROLLER  = 2;
 const uint8_t DETECTION_MODE_POLAR_GRID = 2;
 const uint8_t LED_RENDER_MODE_SECTOR_FILL = 0;
 const uint8_t LED_RENDER_MODE_RADAR = 1;
-const bool ENABLE_NAV_AUDIO_PLAYBACK = false;
-
 struct __attribute__((packed)) ConfigPacket {
   uint8_t  msg_type;           // MSG_CONFIG
   uint8_t  zone_mode;          // 4, 6, or 8
@@ -78,7 +74,8 @@ struct __attribute__((packed)) ConfigPacket {
   uint8_t  visual_enabled;
   uint8_t  render_mode;
   uint8_t  active_sectors;     // bitmask — bit N = zone N enabled
-};                             // 13 bytes
+  uint8_t  volume;             // 0–255 audio volume for MainController
+};                             // 14 bytes
 
 struct __attribute__((packed)) ComponentStatusPacket {
   uint8_t msg_type;
@@ -92,10 +89,21 @@ struct __attribute__((packed)) DetectionModePacket {
   uint8_t mode; // 2=polar
 };                        // 2 bytes
 
-#define I2S_BCK_IO  27
-#define I2S_WS_IO   26
-#define I2S_DO_IO   25
-#define I2S_PORT    I2S_NUM_0
+const uint8_t MSG_NAV_COMMAND  = 0xB6;
+
+const uint8_t NAV_STOP     = 0;
+const uint8_t NAV_FORWARD  = 1;
+const uint8_t NAV_BACKWARD = 2;
+const uint8_t NAV_LEFT     = 3;
+const uint8_t NAV_RIGHT    = 4;
+const uint8_t NAV_SPEEDUP  = 5;
+const uint8_t NAV_SLOWDOWN = 6;
+const uint8_t NAV_SPEAK    = 7;
+
+struct __attribute__((packed)) NavigationCommandPacket {
+  uint8_t msg_type;  // MSG_NAV_COMMAND
+  uint8_t action;    // NAV_* constant
+};                   // 2 bytes
 
 // ── Network config ────────────────────────────────────────────────────────────
 const char* WIFI_SSID = "ViviSense";
@@ -301,6 +309,7 @@ void sendConfigToMainController(int overrideVisualEnabled = -1)
   cfg.active_sectors      = 0;
   for (int i = 0; i < currentZoneMode; i++)
     if (currentActiveSectors[i]) cfg.active_sectors |= (uint8_t)(1 << i);
+  cfg.volume              = (uint8_t)currentVolume;
   esp_err_t err = esp_now_send(MAIN_CONTROLLER_MAC, (const uint8_t *)&cfg, sizeof(cfg));
   if (err != ESP_OK) Serial.printf("[ESP-NOW] Config send error: 0x%x\n", err);
 }
@@ -652,77 +661,26 @@ void processCoordinates(float x, float y) {
 }
 
 // =========================================================
-// AUDIO ENGINE (I2S + MAX98357A)
+// NAVIGATION COMMANDS — forwarded to MainController over ESP-NOW
+// (MainController owns the speaker; it plays the audio clip)
 // =========================================================
 
-void setupI2S() {
-  i2s_config_t cfg = {
-    .mode                 = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
-    .sample_rate          = 16000,
-    .bits_per_sample      = I2S_BITS_PER_SAMPLE_16BIT,
-    .channel_format       = I2S_CHANNEL_FMT_RIGHT_LEFT,
-    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-    .intr_alloc_flags     = ESP_INTR_FLAG_LEVEL1,
-    .dma_buf_count        = 8,
-    .dma_buf_len          = 128,
-    .use_apll             = false,
-  };
-  i2s_driver_install(I2S_PORT, &cfg, 0, NULL);
-
-  i2s_pin_config_t pins = {
-    .bck_io_num   = I2S_BCK_IO,
-    .ws_io_num    = I2S_WS_IO,
-    .data_out_num = I2S_DO_IO,
-    .data_in_num  = I2S_PIN_NO_CHANGE,
-  };
-  i2s_set_pin(I2S_PORT, &pins);
+void sendNavigationCommand(uint8_t action) {
+  NavigationCommandPacket pkt;
+  pkt.msg_type = MSG_NAV_COMMAND;
+  pkt.action   = action;
+  esp_err_t err = esp_now_send(MAIN_CONTROLLER_MAC, (const uint8_t *)&pkt, sizeof(pkt));
+  if (err != ESP_OK) Serial.printf("[ESP-NOW] Nav command send error: 0x%x\n", err);
 }
 
-void playAudio(const unsigned char* audioData, unsigned int dataLen, unsigned int sampleRate) {
-  if (!ENABLE_NAV_AUDIO_PLAYBACK) {
-    (void)audioData;
-    (void)dataLen;
-    (void)sampleRate;
-    Serial.println("[Audio] Navigation playback disabled in beta firmware");
-    return;
-  }
-  if (dataLen == 0) return;
-  i2s_set_sample_rates(I2S_PORT, sampleRate);
-
-  size_t  bytesWritten;
-  int16_t buf[128];
-  int     bufIdx   = 0;
-  float   volFactor = (float)currentVolume / 255.0f;
-
-  for (unsigned int i = 0; i + 1 < dataLen; i += 2) {
-    uint8_t lo  = pgm_read_byte(&audioData[i]);
-    uint8_t hi  = pgm_read_byte(&audioData[i + 1]);
-    int16_t smp = (int16_t)((hi << 8) | lo);
-    smp = (int16_t)(smp * volFactor);
-    buf[bufIdx++] = smp; // Left
-    buf[bufIdx++] = smp; // Right
-    if (bufIdx >= 128) {
-      i2s_write(I2S_PORT, buf, sizeof(buf), &bytesWritten, portMAX_DELAY);
-      bufIdx = 0;
-    }
-  }
-  if (bufIdx > 0)
-    i2s_write(I2S_PORT, buf, bufIdx * 2, &bytesWritten, portMAX_DELAY);
-  i2s_zero_dma_buffer(I2S_PORT);
-}
-
-// =========================================================
-// NAVIGATION AUDIO ACTIONS
-// =========================================================
-
-void handleStop()      { Serial.println("Action: STOP");     playAudio(stop_data,       stop_len,       stop_rate);      }
-void handleGoForward() { Serial.println("Action: Forward");  playAudio(go_forward_data, go_forward_len, go_forward_rate); }
-void handleTurnLeft()  { Serial.println("Action: Left");     playAudio(turn_left_data,  turn_left_len,  turn_left_rate);  }
-void handleTurnRight() { Serial.println("Action: Right");    playAudio(turn_right_data, turn_right_len, turn_right_rate); }
-void handleSpeedUp()   { Serial.println("Action: Speed Up"); playAudio(speed_up_data,   speed_up_len,   speed_up_rate);   }
-void handleSlowDown()  { Serial.println("Action: Slow Down");playAudio(slow_down_data,  slow_down_len,  slow_down_rate);  }
-void handleBackUp()    { Serial.println("Action: Back Up");  playAudio(back_up_data,    back_up_len,    back_up_rate);    }
-void handleSpeak()     { Serial.println("Action: Speak");    /* TODO: trigger voice input */ }
+void handleStop()      { Serial.println("Nav: STOP");      sendNavigationCommand(NAV_STOP);     }
+void handleGoForward() { Serial.println("Nav: Forward");   sendNavigationCommand(NAV_FORWARD);  }
+void handleTurnLeft()  { Serial.println("Nav: Left");      sendNavigationCommand(NAV_LEFT);     }
+void handleTurnRight() { Serial.println("Nav: Right");     sendNavigationCommand(NAV_RIGHT);    }
+void handleSpeedUp()   { Serial.println("Nav: Speed Up");  sendNavigationCommand(NAV_SPEEDUP);  }
+void handleSlowDown()  { Serial.println("Nav: Slow Down"); sendNavigationCommand(NAV_SLOWDOWN); }
+void handleBackUp()    { Serial.println("Nav: Back Up");   sendNavigationCommand(NAV_BACKWARD); }
+void handleSpeak()     { Serial.println("Nav: Speak");     sendNavigationCommand(NAV_SPEAK);    }
 
 // =========================================================
 // WEBSOCKET STATUS HELPER
@@ -797,6 +755,7 @@ void handleWebSocketMessage(const char* msg) {
   } else if (strcmp(type, "volume") == 0) {
     currentVolume = constrain(doc["level"].as<int>(), 0, 255);
     Serial.printf("[Volume] %d\n", currentVolume);
+    sendConfigToMainController();
 
   } else if (strcmp(type, "preview") == 0) {
     bool active = doc["active"].as<bool>();
@@ -939,9 +898,6 @@ void setup() {
   if (!SPIFFS.begin(true)) {
     Serial.println("[SPIFFS] Mount failed — UI will not be served");
   }
-
-  // I2S audio
-  setupI2S();
 
   // WiFi Access Point — channel 1 must match the LED ESP32's ESPNOW_CHANNEL
   WiFi.softAP(WIFI_SSID, WIFI_PASS, ESPNOW_CHANNEL);

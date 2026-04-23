@@ -4,6 +4,8 @@
 #include <WiFi.h>
 #include <string.h>
 #include <math.h>
+#include "driver/i2s.h"
+#include "sounds.h"
 #include "SensorAndPoint.h"
 #include "runtime_defaults.h"
 #include "led_frame.h"
@@ -78,7 +80,8 @@ struct ConfigPacket
   uint8_t  visual_enabled;
   uint8_t  render_mode;
   uint8_t  active_sectors;     // bitmask — bit N = zone N enabled
-} __attribute__((packed));     // 13 bytes
+  uint8_t  volume;             // 0–255 audio volume
+} __attribute__((packed));     // 14 bytes
 
 struct ComponentStatusPacket
 {
@@ -93,6 +96,32 @@ struct DetectionModePacket
   uint8_t msg_type;          // MSG_DETECTION_MODE
   uint8_t mode;              // 2=polar (other values ignored)
 } __attribute__((packed));   // 2 bytes
+
+const uint8_t MSG_NAV_COMMAND  = 0xB6; // CaregiverApp -> MainController
+
+const uint8_t NAV_STOP     = 0;
+const uint8_t NAV_FORWARD  = 1;
+const uint8_t NAV_BACKWARD = 2;
+const uint8_t NAV_LEFT     = 3;
+const uint8_t NAV_RIGHT    = 4;
+const uint8_t NAV_SPEEDUP  = 5;
+const uint8_t NAV_SLOWDOWN = 6;
+const uint8_t NAV_SPEAK    = 7;
+
+struct NavigationCommandPacket
+{
+  uint8_t msg_type;  // MSG_NAV_COMMAND
+  uint8_t action;    // NAV_* constant
+} __attribute__((packed));   // 2 bytes
+
+// ── Audio (I2S + MAX98357A) ───────────────────────────────────────────────────
+#define I2S_BCK_IO  27
+#define I2S_WS_IO   26
+#define I2S_DO_IO   25
+#define I2S_PORT    I2S_NUM_0
+
+bool proximityAudioEnabled = false;
+int  currentVolume         = 255;
 
 static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
@@ -168,6 +197,16 @@ void emitTuningConfigLine();
 void handleSerialCommand(char *line);
 void serviceSerialCommands();
 void broadcastComponentStatus();
+void setupI2S();
+void playAudio(const unsigned char* audioData, unsigned int dataLen, unsigned int sampleRate);
+void handleStop();
+void handleGoForward();
+void handleTurnLeft();
+void handleTurnRight();
+void handleSpeedUp();
+void handleSlowDown();
+void handleBackUp();
+void handleSpeak();
 
 static constexpr bool kEmitPolarGridDebugCsv = false;
 
@@ -327,6 +366,28 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
 {
   (void)mac;
 
+  if (len == (int)sizeof(NavigationCommandPacket))
+  {
+    NavigationCommandPacket navPkt;
+    memcpy(&navPkt, incomingData, sizeof(navPkt));
+    if (navPkt.msg_type == MSG_NAV_COMMAND)
+    {
+      switch (navPkt.action)
+      {
+        case NAV_STOP:     handleStop();      break;
+        case NAV_FORWARD:  handleGoForward(); break;
+        case NAV_BACKWARD: handleBackUp();    break;
+        case NAV_LEFT:     handleTurnLeft();  break;
+        case NAV_RIGHT:    handleTurnRight(); break;
+        case NAV_SPEEDUP:  handleSpeedUp();   break;
+        case NAV_SLOWDOWN: handleSlowDown();  break;
+        case NAV_SPEAK:    handleSpeak();     break;
+        default: break;
+      }
+      return;
+    }
+  }
+
   if (len == (int)sizeof(DetectionModePacket))
   {
     DetectionModePacket modePkt;
@@ -352,19 +413,22 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
       if (cfg.zone_mode == 4 || cfg.zone_mode == 6 || cfg.zone_mode == 8)
         proximityNumZones = cfg.zone_mode;
       proximityBrightness    = cfg.brightness;
+      proximityAudioEnabled  = (cfg.audio_enabled != 0);
       proximityVisualEnabled = (cfg.visual_enabled != 0);
       proximityLedRenderMode = (uint8_t)clampInt((int)cfg.render_mode, 0, 1);
       proximityActiveSectors = cfg.active_sectors;
+      currentVolume          = cfg.volume;
       applyProximityThresholds(cfg.red_threshold_mm, cfg.orange_threshold_mm, cfg.yellow_threshold_mm);
       if (!proximityVisualEnabled)
       {
         clearPolarGrid();
         sendClearLedFrame();
       }
-      Serial.printf("[Config] zones=%d bright=%d visual=%s led_mode=%d sectors=0x%02X\n",
+      Serial.printf("[Config] zones=%d bright=%d audio=%s visual=%s led_mode=%d sectors=0x%02X vol=%d\n",
                     proximityNumZones, proximityBrightness,
+                    proximityAudioEnabled ? "on" : "off",
                     proximityVisualEnabled ? "on" : "off", (int)proximityLedRenderMode,
-                    proximityActiveSectors);
+                    proximityActiveSectors, currentVolume);
       return;
     }
   }
@@ -1021,6 +1085,77 @@ void serviceSerialCommands()
   }
 }
 
+// =========================================================
+// AUDIO ENGINE (I2S + MAX98357A)
+// =========================================================
+
+void setupI2S()
+{
+  i2s_config_t cfg = {
+    .mode                 = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+    .sample_rate          = 16000,
+    .bits_per_sample      = I2S_BITS_PER_SAMPLE_16BIT,
+    .channel_format       = I2S_CHANNEL_FMT_RIGHT_LEFT,
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags     = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count        = 8,
+    .dma_buf_len          = 128,
+    .use_apll             = false,
+  };
+  i2s_driver_install(I2S_PORT, &cfg, 0, NULL);
+
+  i2s_pin_config_t pins = {
+    .bck_io_num   = I2S_BCK_IO,
+    .ws_io_num    = I2S_WS_IO,
+    .data_out_num = I2S_DO_IO,
+    .data_in_num  = I2S_PIN_NO_CHANGE,
+  };
+  i2s_set_pin(I2S_PORT, &pins);
+}
+
+void playAudio(const unsigned char* audioData, unsigned int dataLen, unsigned int sampleRate)
+{
+  if (!proximityAudioEnabled) return;
+  if (dataLen == 0) return;
+  i2s_set_sample_rates(I2S_PORT, sampleRate);
+
+  size_t  bytesWritten;
+  int16_t buf[128];
+  int     bufIdx    = 0;
+  float   volFactor = (float)currentVolume / 255.0f;
+
+  for (unsigned int i = 0; i + 1 < dataLen; i += 2)
+  {
+    uint8_t lo  = pgm_read_byte(&audioData[i]);
+    uint8_t hi  = pgm_read_byte(&audioData[i + 1]);
+    int16_t smp = (int16_t)((hi << 8) | lo);
+    smp         = (int16_t)(smp * volFactor);
+    buf[bufIdx++] = smp; // Left
+    buf[bufIdx++] = smp; // Right
+    if (bufIdx >= 128)
+    {
+      i2s_write(I2S_PORT, buf, sizeof(buf), &bytesWritten, portMAX_DELAY);
+      bufIdx = 0;
+    }
+  }
+  if (bufIdx > 0)
+    i2s_write(I2S_PORT, buf, bufIdx * 2, &bytesWritten, portMAX_DELAY);
+  i2s_zero_dma_buffer(I2S_PORT);
+}
+
+// =========================================================
+// NAVIGATION AUDIO ACTIONS
+// =========================================================
+
+void handleStop()      { Serial.println("Nav: STOP");      playAudio(stop_data,       stop_len,       stop_rate);       }
+void handleGoForward() { Serial.println("Nav: Forward");   playAudio(go_forward_data, go_forward_len, go_forward_rate); }
+void handleTurnLeft()  { Serial.println("Nav: Left");      playAudio(turn_left_data,  turn_left_len,  turn_left_rate);  }
+void handleTurnRight() { Serial.println("Nav: Right");     playAudio(turn_right_data, turn_right_len, turn_right_rate); }
+void handleSpeedUp()   { Serial.println("Nav: Speed Up");  playAudio(speed_up_data,   speed_up_len,   speed_up_rate);   }
+void handleSlowDown()  { Serial.println("Nav: Slow Down"); playAudio(slow_down_data,  slow_down_len,  slow_down_rate);  }
+void handleBackUp()    { Serial.println("Nav: Back Up");   playAudio(back_up_data,    back_up_len,    back_up_rate);    }
+void handleSpeak()     { Serial.println("Nav: Speak");     /* TODO: future verbal override */ }
+
 void setup()
 {
   Serial.begin(SERIAL_BAUD);
@@ -1028,6 +1163,7 @@ void setup()
   Serial.println();
   Serial.println("Base receiver minimal ESP-NOW point converter");
 
+  setupI2S();
   configureSensors();
 
   WiFi.mode(WIFI_STA);
