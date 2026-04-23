@@ -48,14 +48,14 @@ function buildDefaultSectors(count: SectorCount): Partial<Record<Sector, boolean
 function defaultState(): ConfigState {
   return {
     audioEnabled: false,
-    visualEnabled: false,
+    visualEnabled: true,
     selectedMode: 'sector',
     selectedAudioMode: null,
     advanced: {
       thresholds: { redMax: 60, orangeMax: 105, yellowMax: 150 },
       sectorCount: 6,
       activeSectors: buildDefaultSectors(6),
-      brightness: 100,
+      brightness: 20,
     },
   };
 }
@@ -132,6 +132,12 @@ function renderSectorToggles(): string {
   }).join('');
 }
 
+function syncSelectedModeCards(): void {
+  document.querySelectorAll<HTMLElement>('.mode-card[data-mode]').forEach(card => {
+    card.classList.toggle('selected', card.dataset['mode'] === state.selectedMode);
+  });
+}
+
 function applyStatus(msg: Record<string, unknown>): void {
   const zoneMode = msg['zoneMode'] as number | undefined;
   const brightness = msg['brightness'] as number | undefined;
@@ -163,7 +169,10 @@ function applyStatus(msg: Record<string, unknown>): void {
 
   const brightSlider = document.getElementById('brightness-slider') as HTMLInputElement | null;
   const brightVal = document.getElementById('brightness-value');
-  if (brightSlider && brightness !== undefined) brightSlider.value = String(brightness);
+  const activeEl = document.activeElement;
+  if (brightSlider && brightness !== undefined && activeEl !== brightSlider) {
+    brightSlider.value = String(brightness);
+  }
   if (brightVal && brightness !== undefined) brightVal.textContent = `${brightness}%`;
 
   const redSlider = document.getElementById('threshold-red') as HTMLInputElement | null;
@@ -173,17 +182,21 @@ function applyStatus(msg: Record<string, unknown>): void {
   const yellowSlider = document.getElementById('threshold-yellow') as HTMLInputElement | null;
   const yellowValEl = document.getElementById('yellow-threshold-val');
   const greenStartsEl = document.getElementById('green-starts-val');
-  if (redSlider && redThreshold !== undefined) redSlider.value = String(redThreshold);
+  if (redSlider && redThreshold !== undefined && activeEl !== redSlider) {
+    redSlider.value = String(redThreshold);
+  }
   if (redValEl && redThreshold !== undefined) redValEl.textContent = String(redThreshold);
-  if (orangeSlider && orangeThreshold !== undefined) orangeSlider.value = String(orangeThreshold);
+  if (orangeSlider && orangeThreshold !== undefined && activeEl !== orangeSlider) {
+    orangeSlider.value = String(orangeThreshold);
+  }
   if (orangeValEl && orangeThreshold !== undefined) orangeValEl.textContent = String(orangeThreshold);
-  if (yellowSlider && yellowThreshold !== undefined) yellowSlider.value = String(yellowThreshold);
+  if (yellowSlider && yellowThreshold !== undefined && activeEl !== yellowSlider) {
+    yellowSlider.value = String(yellowThreshold);
+  }
   if (yellowValEl && yellowThreshold !== undefined) yellowValEl.textContent = String(yellowThreshold);
   if (greenStartsEl && yellowThreshold !== undefined) greenStartsEl.textContent = String(yellowThreshold);
 
-  document.querySelectorAll<HTMLElement>('.mode-card[data-mode]').forEach(card => {
-    card.classList.toggle('selected', card.dataset['mode'] === state.selectedMode);
-  });
+  syncSelectedModeCards();
 
   if (zoneMode !== undefined || activeSectors !== undefined) {
     document.querySelectorAll<HTMLButtonElement>('.sector-count-btn[data-count]').forEach(btn => {
@@ -389,6 +402,7 @@ function initSectorToggles(): void {
 
 export function initFeedbackConfig(): void {
   state = defaultState();
+  syncSelectedModeCards();
 
   const audioEnableBtn = document.getElementById('audio-enable-btn') as HTMLButtonElement | null;
   const audioModeCards = document.getElementById('audio-mode-cards');

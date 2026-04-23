@@ -792,8 +792,10 @@ void handleWebSocketMessage(const char* msg) {
                   currentZoneMode, brightnessPercentFromRaw(currentBrightness),
                   audioEnabled ? "on" : "off", visualEnabled ? "on" : "off");
 
-    // Relay updated settings to MainController so its zone computation matches
-    sendConfigToMainController();
+    // Relay updated settings to MainController so its zone computation matches.
+    // While preview is active, keep MainController visual output disabled so it
+    // cannot overwrite the preview frame being sent directly to LED controller.
+    sendConfigToMainController(previewMode ? 0 : -1);
 
   } else if (strcmp(type, "navigate") == 0) {
     const char* action = doc["action"] | "";
