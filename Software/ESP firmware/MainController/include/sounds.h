@@ -1,10 +1,10 @@
 /*
- * sounds.h — Audio data stub for ViviSense firmware
+ * sounds.h — Audio data stub for ViviSense MainController firmware
  *
  * This file contains empty placeholders so the firmware compiles immediately.
- * To add real audio, copy the files from webserver/audio_files/ into this
- * project, run  python webserver/wav_to_header.py  and replace this file
- * with the generated output.
+ * To add real audio, record or TTS-generate WAVs at 16-bit PCM, mono, 16 kHz,
+ * then run  python webserver/wav_to_header.py  and replace this file with the
+ * generated output.
  *
  * Required WAV format: 16-bit PCM, mono, 16 kHz recommended.
  */

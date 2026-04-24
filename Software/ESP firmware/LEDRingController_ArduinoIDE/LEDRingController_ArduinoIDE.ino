@@ -24,6 +24,12 @@
 
 const uint8_t MSG_COMPONENT_STATUS = 0xB4;
 const uint8_t COMPONENT_LED_CONTROLLER = 2;
+const uint8_t LED_BRIGHTNESS_DEFAULT = 26;   // UI default 20% (of capped 50% max)
+const uint8_t LED_BRIGHTNESS_MAX = 128;      // 50%
+const uint8_t OUTER_RING_LED_COUNT = 32;
+const uint32_t FRAME_TIMEOUT_DEFAULT_MS = 5000;  // configurable timeout
+const uint32_t ALERT_PULSE_PERIOD_MS = 2400;     // slow pulse
+const uint32_t ALERT_RENDER_PERIOD_MS = 30;
 static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 struct __attribute__((packed)) ComponentStatusPacket {
@@ -38,30 +44,48 @@ Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 bool visualEnabled = true;
 uint32_t lastHeartbeatMs = 0;
 const uint32_t HEARTBEAT_PERIOD_MS = 1000;
+uint32_t frameTimeoutMs = FRAME_TIMEOUT_DEFAULT_MS;
+uint32_t lastFrameRxMs = 0;
+uint32_t lastAlertRenderMs = 0;
 
-static uint32_t applyBrightness(uint32_t base, uint8_t brightness) {
-  uint8_t r = ((base >> 16) & 0xFF) * brightness / 255;
-  uint8_t g = ((base >> 8) & 0xFF) * brightness / 255;
-  uint8_t b = ((base) & 0xFF) * brightness / 255;
-  return strip.Color(r, g, b);
-}
-
-static uint32_t resolveColor(uint8_t code, uint8_t brightness) {
+static uint32_t resolveColor(uint8_t code) {
   switch (code) {
-    case LED_COLOR_RED:    return applyBrightness(0xFF0000, brightness);
-    case LED_COLOR_ORANGE: return applyBrightness(0xFF5500, brightness);
-    case LED_COLOR_YELLOW: return applyBrightness(0xFFEE00, brightness);
-    case LED_COLOR_GREEN:  return applyBrightness(0x00CC55, brightness);
-    case LED_COLOR_BLUE:   return applyBrightness(0x0066FF, brightness);
+    case LED_COLOR_RED:    return strip.Color(255, 0, 0); //R,G,B
+    case LED_COLOR_ORANGE: return strip.Color(255, 50, 0);
+    case LED_COLOR_YELLOW: return strip.Color(255, 221, 0);
+    case LED_COLOR_GREEN:  return strip.Color(15, 138, 15);
+    case LED_COLOR_BLUE:   return strip.Color(0, 85, 255);
     default:               return 0;
   }
 }
 
 static void applyFrame(const LedFrame_t& frame) {
+  uint8_t brightness = frame.brightness;
+  if (brightness > LED_BRIGHTNESS_MAX) brightness = LED_BRIGHTNESS_MAX;
+  strip.setBrightness(brightness);
   strip.clear();
   for (int i = 0; i < NUM_LEDS; i++) {
     if (frame.leds[i] == LED_COLOR_OFF) continue;
-    strip.setPixelColor(i, resolveColor(frame.leds[i], frame.brightness));
+    strip.setPixelColor(i, resolveColor(frame.leds[i]));
+  }
+  strip.show();
+  lastFrameRxMs = millis();
+}
+
+static void renderTimeoutAlert(uint32_t nowMs) {
+  uint32_t period = ALERT_PULSE_PERIOD_MS;
+  if (period < 200) period = 200;
+  uint32_t half = period / 2;
+  if (half == 0) half = 1;
+
+  uint32_t phase = nowMs % period;
+  uint32_t ramp = (phase <= half) ? phase : (period - phase);
+  uint8_t pulseBrightness = (uint8_t)((ramp * LED_BRIGHTNESS_MAX) / half);
+
+  strip.setBrightness(pulseBrightness);
+  strip.clear();
+  for (int i = 0; i < OUTER_RING_LED_COUNT; i++) {
+    strip.setPixelColor(i, strip.Color(255, 0, 0));
   }
   strip.show();
 }
@@ -103,8 +127,9 @@ void setup() {
   Serial.begin(115200);
 
   strip.begin();
-  strip.setBrightness(255);
+  strip.setBrightness(LED_BRIGHTNESS_DEFAULT);
   strip.show();
+  lastFrameRxMs = millis();
 
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
@@ -139,5 +164,12 @@ void loop() {
   if ((nowMs - lastHeartbeatMs) >= HEARTBEAT_PERIOD_MS) {
     lastHeartbeatMs = nowMs;
     sendHeartbeat();
+  }
+
+  if ((nowMs - lastFrameRxMs) >= frameTimeoutMs) {
+    if ((nowMs - lastAlertRenderMs) >= ALERT_RENDER_PERIOD_MS) {
+      lastAlertRenderMs = nowMs;
+      renderTimeoutAlert(nowMs);
+    }
   }
 }

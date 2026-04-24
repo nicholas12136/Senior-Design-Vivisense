@@ -59,20 +59,46 @@ struct SensorPacket
 const uint8_t MSG_CONFIG           = 0xB1; // CaregiverApp -> MainController
 const uint8_t MSG_COMPONENT_STATUS = 0xB4; // MainController -> CaregiverApp (broadcast)
 const uint8_t MSG_DETECTION_MODE   = 0xB5; // CaregiverApp -> MainController
+const uint8_t MSG_NAV_COMMAND      = 0xB6; // CaregiverApp -> MainController
+
+const uint8_t NAV_STOP     = 0;
+const uint8_t NAV_FORWARD  = 1;
+const uint8_t NAV_BACKWARD = 2;
+const uint8_t NAV_LEFT     = 3;
+const uint8_t NAV_RIGHT    = 4;
+const uint8_t NAV_SPEEDUP  = 5;
+const uint8_t NAV_SLOWDOWN = 6;
+const uint8_t NAV_SPEAK    = 7;
+
+struct NavigationCommandPacket
+{
+  uint8_t msg_type;  // MSG_NAV_COMMAND
+  uint8_t action;    // NAV_* constant
+} __attribute__((packed));   // 2 bytes
 
 const uint8_t COMPONENT_MAIN_CONTROLLER = 1;
 const uint8_t DETECTION_MODE_POLAR_GRID = 2;
 
 const uint8_t LED_RENDER_MODE_SECTOR_FILL = 0;
 const uint8_t LED_RENDER_MODE_RADAR = 1;
+const uint8_t LED_BRIGHTNESS_MAX = (uint8_t)RuntimeDefaults::kMaxBrightness;
 const float NO_OBSTACLE_MM = 1.0e9f;
+
+// ── Audio (I2S + MAX98357A) ───────────────────────────────────────────────────
+#define I2S_BCK_IO  27
+#define I2S_WS_IO   26
+#define I2S_DO_IO   25
+#define I2S_PORT    I2S_NUM_0
+
+bool proximityAudioEnabled = false;
+int  currentVolume         = 255;
 
 // Sent by CaregiverApp when the caregiver changes settings in the browser UI.
 struct ConfigPacket
 {
   uint8_t  msg_type;           // MSG_CONFIG
   uint8_t  zone_mode;          // 4, 6, or 8
-  uint8_t  brightness;         // 0–64
+  uint8_t  brightness;         // 0-255 (capped at 50%)
   uint16_t red_threshold_mm;
   uint16_t orange_threshold_mm;
   uint16_t yellow_threshold_mm;
@@ -96,32 +122,6 @@ struct DetectionModePacket
   uint8_t msg_type;          // MSG_DETECTION_MODE
   uint8_t mode;              // 2=polar (other values ignored)
 } __attribute__((packed));   // 2 bytes
-
-const uint8_t MSG_NAV_COMMAND  = 0xB6; // CaregiverApp -> MainController
-
-const uint8_t NAV_STOP     = 0;
-const uint8_t NAV_FORWARD  = 1;
-const uint8_t NAV_BACKWARD = 2;
-const uint8_t NAV_LEFT     = 3;
-const uint8_t NAV_RIGHT    = 4;
-const uint8_t NAV_SPEEDUP  = 5;
-const uint8_t NAV_SLOWDOWN = 6;
-const uint8_t NAV_SPEAK    = 7;
-
-struct NavigationCommandPacket
-{
-  uint8_t msg_type;  // MSG_NAV_COMMAND
-  uint8_t action;    // NAV_* constant
-} __attribute__((packed));   // 2 bytes
-
-// ── Audio (I2S + MAX98357A) ───────────────────────────────────────────────────
-#define I2S_BCK_IO  27
-#define I2S_WS_IO   26
-#define I2S_DO_IO   25
-#define I2S_PORT    I2S_NUM_0
-
-bool proximityAudioEnabled = false;
-int  currentVolume         = 255;
 
 static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
@@ -412,7 +412,7 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
     {
       if (cfg.zone_mode == 4 || cfg.zone_mode == 6 || cfg.zone_mode == 8)
         proximityNumZones = cfg.zone_mode;
-      proximityBrightness    = cfg.brightness;
+      proximityBrightness    = clampInt((int)cfg.brightness, 0, (int)LED_BRIGHTNESS_MAX);
       proximityAudioEnabled  = (cfg.audio_enabled != 0);
       proximityVisualEnabled = (cfg.visual_enabled != 0);
       proximityLedRenderMode = (uint8_t)clampInt((int)cfg.render_mode, 0, 1);
@@ -581,6 +581,17 @@ void applyProximityThresholds(float redMaxMm, float orangeMaxMm, float yellowMax
 static int proximityZoneIndex(float angleDeg, int numZones)
 {
   if (numZones <= 0) return -1;
+
+  if (numZones == 6)
+  {
+    if (angleDeg >= -30.0f && angleDeg < 30.0f) return 0;    // AHEAD
+    if (angleDeg >= 30.0f && angleDeg <= 90.0f) return 1;    // TOP_RIGHT
+    if (angleDeg > 90.0f && angleDeg < 150.0f) return 2;     // BOTTOM_RIGHT
+    if (angleDeg < -150.0f || angleDeg >= 150.0f) return 3;  // BEHIND
+    if (angleDeg >= -150.0f && angleDeg < -90.0f) return 4;  // BOTTOM_LEFT
+    return 5;                                                 // TOP_LEFT
+  }
+
   const float step = 360.0f / (float)numZones;
   int idx = (int)floorf((angleDeg + (0.5f * step)) / step);
   idx %= numZones;
@@ -968,7 +979,7 @@ void handleSerialCommand(char *line)
   }
   else if (strcmp(key, "bright") == 0)
   {
-    proximityBrightness = clampInt((int)raw, 0, 64);
+    proximityBrightness = clampInt((int)raw, 0, (int)LED_BRIGHTNESS_MAX);
   }
   else if (strcmp(key, "visual") == 0)
   {
