@@ -47,7 +47,7 @@ function buildDefaultSectors(count: SectorCount): Partial<Record<Sector, boolean
 
 function defaultState(): ConfigState {
   return {
-    audioEnabled: false,
+    audioEnabled: true,
     visualEnabled: true,
     selectedMode: 'sector',
     selectedAudioMode: null,
@@ -261,8 +261,8 @@ export function renderFeedbackConfig(): string {
       <section class="config-section">
         <div class="section-header">
           <div>
-            <h2 class="section-title">Audio Feedback Mode</h2>
-            <p class="section-subtitle">Select how audio communicates obstacle proximity.</p>
+            <h2 class="section-title">Obstacle Audio Feedback Mode</h2>
+            <p class="section-subtitle">Controls tonal/verbal obstacle cues only. Controller command prompts always play.</p>
           </div>
           <button class="enable-btn${state.audioEnabled ? ' active' : ''}" id="audio-enable-btn">
             ${state.audioEnabled ? 'Enabled' : 'Disabled'}

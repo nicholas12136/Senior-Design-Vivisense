@@ -74,7 +74,7 @@ struct __attribute__((packed)) ConfigPacket {
   uint16_t red_threshold_mm;
   uint16_t orange_threshold_mm;
   uint16_t yellow_threshold_mm;
-  uint8_t  audio_enabled;
+  uint8_t  audio_enabled;      // obstacle-audio feedback enable (not nav commands)
   uint8_t  visual_enabled;
   uint8_t  render_mode;
   uint8_t  active_sectors;     // bitmask — bit N = zone N enabled
@@ -746,12 +746,34 @@ void playAudio(const unsigned char* audioData, unsigned int dataLen, unsigned in
 // (MainController owns the speaker; it plays the audio clip)
 // =========================================================
 
+static const char* navActionName(uint8_t action) {
+  switch (action) {
+    case NAV_STOP:     return "STOP";
+    case NAV_FORWARD:  return "FORWARD";
+    case NAV_BACKWARD: return "BACKWARD";
+    case NAV_LEFT:     return "LEFT";
+    case NAV_RIGHT:    return "RIGHT";
+    case NAV_SPEEDUP:  return "SPEEDUP";
+    case NAV_SLOWDOWN: return "SLOWDOWN";
+    case NAV_SPEAK:    return "SPEAK";
+    default:           return "UNKNOWN";
+  }
+}
+
 void sendNavigationCommand(uint8_t action) {
   NavigationCommandPacket pkt;
   pkt.msg_type = MSG_NAV_COMMAND;
   pkt.action   = action;
+  Serial.printf("[Nav TX] %s -> %02X:%02X:%02X:%02X:%02X:%02X\n",
+                navActionName(action),
+                MAIN_CONTROLLER_MAC[0], MAIN_CONTROLLER_MAC[1], MAIN_CONTROLLER_MAC[2],
+                MAIN_CONTROLLER_MAC[3], MAIN_CONTROLLER_MAC[4], MAIN_CONTROLLER_MAC[5]);
   esp_err_t err = esp_now_send(MAIN_CONTROLLER_MAC, (const uint8_t *)&pkt, sizeof(pkt));
-  if (err != ESP_OK) Serial.printf("[ESP-NOW] Nav command send error: 0x%x\n", err);
+  if (err != ESP_OK) {
+    Serial.printf("[ESP-NOW] Nav command queue error: 0x%x\n", err);
+  } else {
+    Serial.println("[ESP-NOW] Nav command queued");
+  }
 }
 
 void handleStop()      { Serial.println("Nav: STOP");      sendNavigationCommand(NAV_STOP);     }

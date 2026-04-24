@@ -26,6 +26,7 @@ const uint8_t MSG_COMPONENT_STATUS = 0xB4;
 const uint8_t COMPONENT_LED_CONTROLLER = 2;
 const uint8_t LED_BRIGHTNESS_DEFAULT = 26;   // UI default 20% (of capped 50% max)
 const uint8_t LED_BRIGHTNESS_MAX = 128;      // 50%
+const uint8_t ALERT_BRIGHTNESS_MAX = 96;     // timeout pulse peak (dimmer than normal max)
 const uint8_t OUTER_RING_LED_COUNT = 32;
 const uint32_t FRAME_TIMEOUT_DEFAULT_MS = 5000;  // configurable timeout
 const uint32_t ALERT_PULSE_PERIOD_MS = 2400;     // slow pulse
@@ -80,7 +81,7 @@ static void renderTimeoutAlert(uint32_t nowMs) {
 
   uint32_t phase = nowMs % period;
   uint32_t ramp = (phase <= half) ? phase : (period - phase);
-  uint8_t pulseBrightness = (uint8_t)((ramp * LED_BRIGHTNESS_MAX) / half);
+  uint8_t pulseBrightness = (uint8_t)((ramp * ALERT_BRIGHTNESS_MAX) / half);
 
   strip.setBrightness(pulseBrightness);
   strip.clear();

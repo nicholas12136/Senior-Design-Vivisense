@@ -22,6 +22,18 @@ const uint32_t SERIAL_BAUD = RuntimeDefaults::kSerialBaud;
 const int NUM_SENSORS = 8;
 const uint8_t SENSOR_IDS[NUM_SENSORS] = {1, 2, 3, 4, 5, 6, 7, 8};
 
+// Sensor pose configuration guide:
+// - x_off_mm / y_off_mm / z_off_mm are the sensor origin in WORLD coordinates (mm).
+// - WORLD and SENSOR axis convention is right-handed: +X forward, +Y left, +Z up.
+// - alpha_deg / beta_deg / gamma_deg are Euler angles in DEGREES.
+//   alpha = rotation about X, beta = rotation about Y, gamma = rotation about Z.
+// - Rotation matrix composition in SensorAndPoint.h is:
+//     R = Rz(gamma) * Ry(beta) * Rx(alpha)
+//   and points are transformed as p_world = R * p_sensor + t.
+//   This means rotations are applied in this order about FIXED/world-aligned axes:
+//     1) X by alpha, 2) Y by beta, 3) Z by gamma
+//   (extrinsic XYZ order, not intrinsic rotating-local-axis order).
+// - Positive angles follow the right-hand rule about each axis.
 struct SensorConfig
 {
   uint8_t sensorId;
@@ -36,14 +48,14 @@ struct SensorConfig
 SensorConfig SENSOR_CONFIGS[NUM_SENSORS] =
     {
         // ID, x_mm,  y_mm,   z_mm,    alpha,  beta,  gamma
-        {1, 165.1f, 295.275f, 501.65f, 0.0f, 0.0f, 30.0f},
-        {2, 177.8f, 257.175f, 501.65f, 0.0f, 0.0f, 0.0f},
-        {3, 177.8f, -257.175f, 501.65f, 180.0f, 0.0f, 0.0f},
-        {4, 165.1f, -295.275f, 501.65f, 180.0f, 0.0f, -30.0f},
-        {5, -444.5f, -63.5f, 1282.7f, 0.0f, 10.0f, -90.0f},
-        {6, -508.0f, -12.7f, 1282.7f, 0.0f, 10.0f, -150.0f},
-        {7, -508.0f, 25.4f, 1282.7f, 180.0f, 10.0f, 150.0f},
-        {8, -444.5f, 63.5f, 1282.7f, 180.0f, 10.0f, 90.0f},
+        {1, 215.0f, 240.0f, 547.0f, 0.0f, 0.0f, 30.0f},
+        {2, 200.0f, 277.0f, 547.0f, 0.0f, 0.0f, 0.0f},
+        {3, 200.0f, -277.0f, 547.0f, 0.0f, 0.0f, 0.0f},
+        {4, 215.0f, -240.0f, 547.0f, 0.0f, 0.0f, -30.0f},
+        {5, -520.0f, -95.0f, 1200.0f, 0.0f, 20.0f, -90.0f},
+        {6, -597.0f, -27.0f, 1200.0f, 0.0f, 20.0f, -150.0f},
+        {7, -597.0f, 27.0f, 1200.0f, 0.0f, 20.0f, 150.0f},
+        {8, -520.0f, 95.0f, 1200.0f, 0.0f, 20.0f, 90.0f},
 };
 struct SensorPacket
 {
@@ -90,7 +102,7 @@ const float NO_OBSTACLE_MM = 1.0e9f;
 #define I2S_DO_IO   25
 #define I2S_PORT    I2S_NUM_0
 
-bool proximityAudioEnabled = false;
+bool obstacleAudioEnabled = true;
 int  currentVolume         = 255;
 
 // Sent by CaregiverApp when the caregiver changes settings in the browser UI.
@@ -102,7 +114,7 @@ struct ConfigPacket
   uint16_t red_threshold_mm;
   uint16_t orange_threshold_mm;
   uint16_t yellow_threshold_mm;
-  uint8_t  audio_enabled;
+  uint8_t  audio_enabled;      // obstacle-audio feedback enable
   uint8_t  visual_enabled;
   uint8_t  render_mode;
   uint8_t  active_sectors;     // bitmask — bit N = zone N enabled
@@ -163,6 +175,8 @@ uint32_t proximityPeriodMs = RuntimeDefaults::kProximityPeriodMs;
 uint8_t  broadcastPeerAdded = 0;
 char serialCmdBuffer[200] = {0};
 uint16_t serialCmdLen = 0;
+bool debugSensorCsvEnabled = true;     // P/E/S lines
+bool debugDetectionCsvEnabled = false;  // DL lines
 
 // Physical ring geometry (outer to inner).
 static constexpr int kPhysicalRingCount = 6;
@@ -198,7 +212,8 @@ void handleSerialCommand(char *line);
 void serviceSerialCommands();
 void broadcastComponentStatus();
 void setupI2S();
-void playAudio(const unsigned char* audioData, unsigned int dataLen, unsigned int sampleRate);
+void playNavigationAudio(const unsigned char* audioData, unsigned int dataLen, unsigned int sampleRate);
+void playObstacleAudio(const unsigned char* audioData, unsigned int dataLen, unsigned int sampleRate);
 void handleStop();
 void handleGoForward();
 void handleTurnLeft();
@@ -248,6 +263,11 @@ void convertPacketToPoints(int sensorIndex)
 
 void emitPointsForSensor(int sensorIndex)
 {
+  if (!debugSensorCsvEnabled)
+  {
+    return;
+  }
+
   if (!serialTelemetryWritable(128))
   {
     return;
@@ -319,7 +339,7 @@ void emitReceiverStatusIfDue()
   lastStatusEmitMs = nowMs;
 
   bool canSerial = serialTelemetryWritable(64);
-  if (canSerial)
+  if (debugSensorCsvEnabled && canSerial)
   {
     for (int i = 0; i < NUM_SENSORS; i++)
     {
@@ -364,77 +384,104 @@ void broadcastComponentStatus()
 
 void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
 {
-  (void)mac;
-
-  if (len == (int)sizeof(NavigationCommandPacket))
+  if (incomingData == nullptr || len <= 0)
   {
-    NavigationCommandPacket navPkt;
-    memcpy(&navPkt, incomingData, sizeof(navPkt));
-    if (navPkt.msg_type == MSG_NAV_COMMAND)
-    {
-      switch (navPkt.action)
-      {
-        case NAV_STOP:     handleStop();      break;
-        case NAV_FORWARD:  handleGoForward(); break;
-        case NAV_BACKWARD: handleBackUp();    break;
-        case NAV_LEFT:     handleTurnLeft();  break;
-        case NAV_RIGHT:    handleTurnRight(); break;
-        case NAV_SPEEDUP:  handleSpeedUp();   break;
-        case NAV_SLOWDOWN: handleSlowDown();  break;
-        case NAV_SPEAK:    handleSpeak();     break;
-        default: break;
-      }
-      return;
-    }
+    return;
   }
 
-  if (len == (int)sizeof(DetectionModePacket))
+  const uint8_t msgType = incomingData[0];
+
+  if (msgType == MSG_NAV_COMMAND)
   {
-    DetectionModePacket modePkt;
-    memcpy(&modePkt, incomingData, sizeof(modePkt));
-    if (modePkt.msg_type == MSG_DETECTION_MODE)
+    if (len < (int)sizeof(NavigationCommandPacket))
     {
-      // Beta architecture is polar-only in MainController.
-      (void)modePkt.mode;
-      proximityDetectionMode = DETECTION_MODE_POLAR_GRID;
-      clearPolarGrid();
-      Serial.println("[Config] detection_mode forced to polar (2)");
+      Serial.printf("[Nav] Dropped short packet len=%d\n", len);
       return;
     }
+
+    NavigationCommandPacket navPkt;
+    memcpy(&navPkt, incomingData, sizeof(navPkt));
+    Serial.printf("[Nav] action=%u from %02X:%02X:%02X:%02X:%02X:%02X\n",
+                  (unsigned int)navPkt.action,
+                  mac ? mac[0] : 0, mac ? mac[1] : 0, mac ? mac[2] : 0,
+                  mac ? mac[3] : 0, mac ? mac[4] : 0, mac ? mac[5] : 0);
+
+    switch (navPkt.action)
+    {
+      case NAV_STOP:     handleStop();      break;
+      case NAV_FORWARD:  handleGoForward(); break;
+      case NAV_BACKWARD: handleBackUp();    break;
+      case NAV_LEFT:     handleTurnLeft();  break;
+      case NAV_RIGHT:    handleTurnRight(); break;
+      case NAV_SPEEDUP:  handleSpeedUp();   break;
+      case NAV_SLOWDOWN: handleSlowDown();  break;
+      case NAV_SPEAK:    handleSpeak();     break;
+      default:
+        Serial.printf("[Nav] Unknown action=%u\n", (unsigned int)navPkt.action);
+        break;
+    }
+    return;
+  }
+
+  if (msgType == MSG_DETECTION_MODE)
+  {
+    if (len < (int)sizeof(DetectionModePacket))
+    {
+      Serial.printf("[Config] Dropped short mode packet len=%d\n", len);
+      return;
+    }
+
+    DetectionModePacket modePkt;
+    memcpy(&modePkt, incomingData, sizeof(modePkt));
+    // Beta architecture is polar-only in MainController.
+    (void)modePkt.mode;
+    proximityDetectionMode = DETECTION_MODE_POLAR_GRID;
+    clearPolarGrid();
+    Serial.println("[Config] detection_mode forced to polar (2)");
+    return;
   }
 
   // ConfigPacket from CaregiverApp — update local proximity settings
-  if (len == (int)sizeof(ConfigPacket))
+  if (msgType == MSG_CONFIG)
   {
-    ConfigPacket cfg;
-    memcpy(&cfg, incomingData, sizeof(cfg));
-    if (cfg.msg_type == MSG_CONFIG)
+    if (len < (int)sizeof(ConfigPacket))
     {
-      if (cfg.zone_mode == 4 || cfg.zone_mode == 6 || cfg.zone_mode == 8)
-        proximityNumZones = cfg.zone_mode;
-      proximityBrightness    = clampInt((int)cfg.brightness, 0, (int)LED_BRIGHTNESS_MAX);
-      proximityAudioEnabled  = (cfg.audio_enabled != 0);
-      proximityVisualEnabled = (cfg.visual_enabled != 0);
-      proximityLedRenderMode = (uint8_t)clampInt((int)cfg.render_mode, 0, 1);
-      proximityActiveSectors = cfg.active_sectors;
-      currentVolume          = cfg.volume;
-      applyProximityThresholds(cfg.red_threshold_mm, cfg.orange_threshold_mm, cfg.yellow_threshold_mm);
-      if (!proximityVisualEnabled)
-      {
-        clearPolarGrid();
-        sendClearLedFrame();
-      }
-      Serial.printf("[Config] zones=%d bright=%d audio=%s visual=%s led_mode=%d sectors=0x%02X vol=%d\n",
-                    proximityNumZones, proximityBrightness,
-                    proximityAudioEnabled ? "on" : "off",
-                    proximityVisualEnabled ? "on" : "off", (int)proximityLedRenderMode,
-                    proximityActiveSectors, currentVolume);
+      Serial.printf("[Config] Dropped short config packet len=%d expected=%u\n",
+                    len, (unsigned int)sizeof(ConfigPacket));
       return;
     }
+
+    ConfigPacket cfg;
+    memcpy(&cfg, incomingData, sizeof(cfg));
+    if (cfg.zone_mode == 4 || cfg.zone_mode == 6 || cfg.zone_mode == 8)
+      proximityNumZones = cfg.zone_mode;
+    proximityBrightness    = clampInt((int)cfg.brightness, 0, (int)LED_BRIGHTNESS_MAX);
+    obstacleAudioEnabled   = (cfg.audio_enabled != 0);
+    proximityVisualEnabled = (cfg.visual_enabled != 0);
+    proximityLedRenderMode = (uint8_t)clampInt((int)cfg.render_mode, 0, 1);
+    proximityActiveSectors = cfg.active_sectors;
+    currentVolume          = cfg.volume;
+    applyProximityThresholds(cfg.red_threshold_mm, cfg.orange_threshold_mm, cfg.yellow_threshold_mm);
+    if (!proximityVisualEnabled)
+    {
+      clearPolarGrid();
+      sendClearLedFrame();
+    }
+    Serial.printf("[Config] zones=%d bright=%d obstacle_audio=%s visual=%s led_mode=%d sectors=0x%02X vol=%d\n",
+                  proximityNumZones, proximityBrightness,
+                  obstacleAudioEnabled ? "on" : "off",
+                  proximityVisualEnabled ? "on" : "off", (int)proximityLedRenderMode,
+                  proximityActiveSectors, currentVolume);
+    return;
   }
 
   if (len != (int)sizeof(SensorPacket))
   {
+    if (len <= 16)
+    {
+      Serial.printf("[ESP-NOW] Ignored packet type=0x%02X len=%d\n",
+                    (unsigned int)msgType, len);
+    }
     return;
   }
 
@@ -724,6 +771,11 @@ void computeZoneProximityFromPolar(float closestMmByZone[8])
 
 void emitDetectionDebugFrame(const float closestMmByZone[8])
 {
+  if (!debugDetectionCsvEnabled)
+  {
+    return;
+  }
+
   if (!serialTelemetryWritable(96))
   {
     return;
@@ -924,7 +976,11 @@ void emitTuningConfigLine()
   Serial.print(",polar_enter,");
   Serial.print((int)polarEnterThreshold);
   Serial.print(",polar_exit,");
-  Serial.println((int)polarExitThreshold);
+  Serial.print((int)polarExitThreshold);
+  Serial.print(",dbg_sensor_csv,");
+  Serial.print(debugSensorCsvEnabled ? 1 : 0);
+  Serial.print(",dbg_detection_csv,");
+  Serial.println(debugDetectionCsvEnabled ? 1 : 0);
 }
 
 void handleSerialCommand(char *line)
@@ -939,7 +995,7 @@ void handleSerialCommand(char *line)
 
   if (strcmp(line, "HELP") == 0)
   {
-    Serial.println("HELP,GET|SET,<key>,<value>");
+    Serial.println("HELP,GET|SET,<key>,<value> (debug keys: dbg_sensor_csv, dbg_detection_csv)");
     return;
   }
 
@@ -1056,6 +1112,16 @@ void handleSerialCommand(char *line)
     polarExitThreshold = (uint8_t)clampInt((int)raw, 0, 254);
     if (polarExitThreshold >= polarEnterThreshold) polarEnterThreshold = polarExitThreshold + 1;
   }
+  else if (strcmp(key, "dbg_sensor_csv") == 0)
+  {
+    debugSensorCsvEnabled = (raw != 0);
+    raw = debugSensorCsvEnabled ? 1 : 0;
+  }
+  else if (strcmp(key, "dbg_detection_csv") == 0)
+  {
+    debugDetectionCsvEnabled = (raw != 0);
+    raw = debugDetectionCsvEnabled ? 1 : 0;
+  }
   else
   {
     updated = false;
@@ -1124,13 +1190,28 @@ void setupI2S()
   i2s_set_pin(I2S_PORT, &pins);
 }
 
-void playAudio(const unsigned char* audioData, unsigned int dataLen, unsigned int sampleRate)
+void playNavigationAudio(const unsigned char* audioData, unsigned int dataLen, unsigned int sampleRate)
 {
-  if (!proximityAudioEnabled) return;
-  if (dataLen == 0) return;
+  Serial.printf("[NavAudio] received len=%u rate=%u vol=%d obstacle_audio=%d\n",
+                dataLen, sampleRate, currentVolume, obstacleAudioEnabled ? 1 : 0);
+  if (dataLen == 0)
+  {
+    Serial.println("[NavAudio] Skipped empty clip");
+    return;
+  }
+  if (currentVolume <= 0)
+  {
+    Serial.println("[NavAudio] Skipped because volume is 0");
+    return;
+  }
+
   i2s_set_sample_rates(I2S_PORT, sampleRate);
 
-  size_t  bytesWritten;
+  size_t  bytesWritten = 0;
+  size_t  totalBytesQueued = 0;
+  size_t  totalBytesWritten = 0;
+  uint32_t writeCalls = 0;
+  esp_err_t firstWriteErr = ESP_OK;
   int16_t buf[128];
   int     bufIdx    = 0;
   float   volFactor = (float)currentVolume / 255.0f;
@@ -1145,26 +1226,62 @@ void playAudio(const unsigned char* audioData, unsigned int dataLen, unsigned in
     buf[bufIdx++] = smp; // Right
     if (bufIdx >= 128)
     {
-      i2s_write(I2S_PORT, buf, sizeof(buf), &bytesWritten, portMAX_DELAY);
+      writeCalls++;
+      totalBytesQueued += sizeof(buf);
+      esp_err_t err = i2s_write(I2S_PORT, buf, sizeof(buf), &bytesWritten, portMAX_DELAY);
+      if (err != ESP_OK && firstWriteErr == ESP_OK) firstWriteErr = err;
+      totalBytesWritten += bytesWritten;
       bufIdx = 0;
     }
   }
   if (bufIdx > 0)
-    i2s_write(I2S_PORT, buf, bufIdx * 2, &bytesWritten, portMAX_DELAY);
+  {
+    const size_t tailBytes = (size_t)bufIdx * sizeof(int16_t);
+    writeCalls++;
+    totalBytesQueued += tailBytes;
+    esp_err_t err = i2s_write(I2S_PORT, buf, tailBytes, &bytesWritten, portMAX_DELAY);
+    if (err != ESP_OK && firstWriteErr == ESP_OK) firstWriteErr = err;
+    totalBytesWritten += bytesWritten;
+  }
+
+  if (firstWriteErr != ESP_OK || totalBytesQueued != totalBytesWritten)
+  {
+    Serial.printf("[NavAudio] i2s_write issue err=0x%x queued=%u written=%u calls=%u\n",
+                  (unsigned int)firstWriteErr,
+                  (unsigned int)totalBytesQueued,
+                  (unsigned int)totalBytesWritten,
+                  (unsigned int)writeCalls);
+  }
+  else
+  {
+    Serial.printf("[NavAudio] i2s_write ok queued=%u written=%u calls=%u\n",
+                  (unsigned int)totalBytesQueued,
+                  (unsigned int)totalBytesWritten,
+                  (unsigned int)writeCalls);
+  }
   i2s_zero_dma_buffer(I2S_PORT);
+}
+
+void playObstacleAudio(const unsigned char* audioData, unsigned int dataLen, unsigned int sampleRate)
+{
+  if (!obstacleAudioEnabled)
+  {
+    return;
+  }
+  playNavigationAudio(audioData, dataLen, sampleRate);
 }
 
 // =========================================================
 // NAVIGATION AUDIO ACTIONS
 // =========================================================
 
-void handleStop()      { Serial.println("Nav: STOP");      playAudio(stop_data,       stop_len,       stop_rate);       }
-void handleGoForward() { Serial.println("Nav: Forward");   playAudio(go_forward_data, go_forward_len, go_forward_rate); }
-void handleTurnLeft()  { Serial.println("Nav: Left");      playAudio(turn_left_data,  turn_left_len,  turn_left_rate);  }
-void handleTurnRight() { Serial.println("Nav: Right");     playAudio(turn_right_data, turn_right_len, turn_right_rate); }
-void handleSpeedUp()   { Serial.println("Nav: Speed Up");  playAudio(speed_up_data,   speed_up_len,   speed_up_rate);   }
-void handleSlowDown()  { Serial.println("Nav: Slow Down"); playAudio(slow_down_data,  slow_down_len,  slow_down_rate);  }
-void handleBackUp()    { Serial.println("Nav: Back Up");   playAudio(back_up_data,    back_up_len,    back_up_rate);    }
+void handleStop()      { Serial.println("Nav: STOP");      playNavigationAudio(stop_data,       stop_len,       stop_rate);       }
+void handleGoForward() { Serial.println("Nav: Forward");   playNavigationAudio(go_forward_data, go_forward_len, go_forward_rate); }
+void handleTurnLeft()  { Serial.println("Nav: Left");      playNavigationAudio(turn_left_data,  turn_left_len,  turn_left_rate);  }
+void handleTurnRight() { Serial.println("Nav: Right");     playNavigationAudio(turn_right_data, turn_right_len, turn_right_rate); }
+void handleSpeedUp()   { Serial.println("Nav: Speed Up");  playNavigationAudio(speed_up_data,   speed_up_len,   speed_up_rate);   }
+void handleSlowDown()  { Serial.println("Nav: Slow Down"); playNavigationAudio(slow_down_data,  slow_down_len,  slow_down_rate);  }
+void handleBackUp()    { Serial.println("Nav: Back Up");   playNavigationAudio(back_up_data,    back_up_len,    back_up_rate);    }
 void handleSpeak()     { Serial.println("Nav: Speak");     /* TODO: future verbal override */ }
 
 void setup()
