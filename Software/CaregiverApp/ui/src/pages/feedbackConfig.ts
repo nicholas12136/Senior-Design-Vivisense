@@ -225,7 +225,7 @@ function applyStatus(msg: Record<string, unknown>): void {
     state.advanced.tones[key] = raw;
     const slider = document.getElementById(sliderId) as HTMLInputElement | null;
     const valEl  = document.getElementById(valId);
-    if (slider && activeEl !== slider) slider.value = String(raw);
+    if (slider && activeEl !== slider) slider.value = String(key.endsWith('Ms') ? 2050 - raw : raw);
     if (valEl) valEl.textContent = key.endsWith('Hz') ? `${raw} Hz` : `${raw} ms`;
   }
 
@@ -445,7 +445,7 @@ export function renderFeedbackConfig(): string {
               <div class="tone-control-row">
                 <span class="tone-axis-label">Tempo</span>
                 <span class="tone-end-label">Slow</span>
-                <input type="range" id="tone-red-tempo" min="50" max="2000" value="${tones.redTempoMs}" />
+                <input type="range" id="tone-red-tempo" min="50" max="2000" value="${2050 - tones.redTempoMs}" />
                 <span class="tone-end-label">Rapid</span>
                 <span class="tone-val" id="tone-red-tempo-val">${tones.redTempoMs} ms</span>
                 <button class="tone-test-btn" data-zone="red">&#9654; Test</button>
@@ -466,7 +466,7 @@ export function renderFeedbackConfig(): string {
               <div class="tone-control-row">
                 <span class="tone-axis-label">Tempo</span>
                 <span class="tone-end-label">Slow</span>
-                <input type="range" id="tone-orange-tempo" min="50" max="2000" value="${tones.orangeTempoMs}" />
+                <input type="range" id="tone-orange-tempo" min="50" max="2000" value="${2050 - tones.orangeTempoMs}" />
                 <span class="tone-end-label">Rapid</span>
                 <span class="tone-val" id="tone-orange-tempo-val">${tones.orangeTempoMs} ms</span>
                 <button class="tone-test-btn" data-zone="orange">&#9654; Test</button>
@@ -487,7 +487,7 @@ export function renderFeedbackConfig(): string {
               <div class="tone-control-row">
                 <span class="tone-axis-label">Tempo</span>
                 <span class="tone-end-label">Slow</span>
-                <input type="range" id="tone-yellow-tempo" min="50" max="2000" value="${tones.yellowTempoMs}" />
+                <input type="range" id="tone-yellow-tempo" min="50" max="2000" value="${2050 - tones.yellowTempoMs}" />
                 <span class="tone-end-label">Rapid</span>
                 <span class="tone-val" id="tone-yellow-tempo-val">${tones.yellowTempoMs} ms</span>
                 <button class="tone-test-btn" data-zone="yellow">&#9654; Test</button>
@@ -589,7 +589,7 @@ export function initFeedbackConfig(): void {
     const slider = document.getElementById(sliderId) as HTMLInputElement | null;
     const valEl  = document.getElementById(valId);
     slider?.addEventListener('input', () => {
-      const v = Number(slider.value);
+      const v = unit === 'ms' ? 2050 - Number(slider.value) : Number(slider.value);
       state.advanced.tones[key] = v;
       if (valEl) valEl.textContent = `${v} ${unit}`;
       sendConfig();
