@@ -79,7 +79,13 @@ struct __attribute__((packed)) ConfigPacket {
   uint8_t  render_mode;
   uint8_t  active_sectors;     // bitmask — bit N = zone N enabled
   uint8_t  volume;             // 0–255 audio volume for MainController
-};                             // 14 bytes
+  uint16_t red_pitch_hz;       // tonal chirp frequency for red zone (Hz)
+  uint16_t red_tempo_ms;       // tonal chirp interval for red zone (ms)
+  uint16_t orange_pitch_hz;
+  uint16_t orange_tempo_ms;
+  uint16_t yellow_pitch_hz;
+  uint16_t yellow_tempo_ms;
+};                             // 26 bytes
 
 struct __attribute__((packed)) ComponentStatusPacket {
   uint8_t msg_type;
@@ -156,6 +162,14 @@ static int brightnessPercentFromRaw(int raw)
 
 bool audioEnabled  = true;   // play audio during obstacle detection
 bool visualEnabled = true;   // light LEDs during obstacle detection
+
+// Tonal chirp defaults — pitch (Hz) and interval (ms) per zone.
+uint16_t toneRedPitchHz    = 1200;
+uint16_t toneRedTempoMs    =  150;
+uint16_t toneOrangePitchHz =  800;
+uint16_t toneOrangeTempoMs =  500;
+uint16_t toneYellowPitchHz =  400;
+uint16_t toneYellowTempoMs = 1000;
 
 // Distance thresholds in mm.
 // Defaults match the UI's default cm values × 10.
@@ -331,6 +345,12 @@ void sendConfigToMainController(int overrideVisualEnabled = -1)
   for (int i = 0; i < currentZoneMode; i++)
     if (currentActiveSectors[i]) cfg.active_sectors |= (uint8_t)(1 << i);
   cfg.volume              = (uint8_t)currentVolume;
+  cfg.red_pitch_hz        = toneRedPitchHz;
+  cfg.red_tempo_ms        = toneRedTempoMs;
+  cfg.orange_pitch_hz     = toneOrangePitchHz;
+  cfg.orange_tempo_ms     = toneOrangeTempoMs;
+  cfg.yellow_pitch_hz     = toneYellowPitchHz;
+  cfg.yellow_tempo_ms     = toneYellowTempoMs;
   esp_err_t err = esp_now_send(MAIN_CONTROLLER_MAC, (const uint8_t *)&cfg, sizeof(cfg));
   if (err != ESP_OK) Serial.printf("[ESP-NOW] Config send error: 0x%x\n", err);
 }
@@ -837,6 +857,12 @@ void handleWebSocketMessage(const char* msg) {
         currentRenderMode = (uint8_t)mode;
       }
     }
+    if (!doc["toneRedPitchHz"].isNull())    toneRedPitchHz    = (uint16_t)constrain(doc["toneRedPitchHz"].as<int>(),    200, 4000);
+    if (!doc["toneRedTempoMs"].isNull())    toneRedTempoMs    = (uint16_t)constrain(doc["toneRedTempoMs"].as<int>(),    50,  2000);
+    if (!doc["toneOrangePitchHz"].isNull()) toneOrangePitchHz = (uint16_t)constrain(doc["toneOrangePitchHz"].as<int>(), 200, 4000);
+    if (!doc["toneOrangeTempoMs"].isNull()) toneOrangeTempoMs = (uint16_t)constrain(doc["toneOrangeTempoMs"].as<int>(), 50,  2000);
+    if (!doc["toneYellowPitchHz"].isNull()) toneYellowPitchHz = (uint16_t)constrain(doc["toneYellowPitchHz"].as<int>(), 200, 4000);
+    if (!doc["toneYellowTempoMs"].isNull()) toneYellowTempoMs = (uint16_t)constrain(doc["toneYellowTempoMs"].as<int>(), 50,  2000);
     Serial.printf("[Config] zoneMode=%d  brightness=%d%%  audio=%s  visual=%s\n",
                   currentZoneMode, brightnessPercentFromRaw(currentBrightness),
                   audioEnabled ? "on" : "off", visualEnabled ? "on" : "off");
@@ -958,6 +984,12 @@ void sendStatus(AsyncWebSocketClient* client) {
   doc["ledControllerAgeMs"] =
       ledControllerConnected ? (int)(nowMs - lastLedControllerStatusMs) : -1;
 
+  doc["toneRedPitchHz"]    = toneRedPitchHz;
+  doc["toneRedTempoMs"]    = toneRedTempoMs;
+  doc["toneOrangePitchHz"] = toneOrangePitchHz;
+  doc["toneOrangeTempoMs"] = toneOrangeTempoMs;
+  doc["toneYellowPitchHz"] = toneYellowPitchHz;
+  doc["toneYellowTempoMs"] = toneYellowTempoMs;
   JsonArray arr = doc["activeSectors"].to<JsonArray>();
   for (int i = 0; i < currentZoneMode; i++) arr.add(currentActiveSectors[i]);
   JsonArray sensors = doc["sensorOnline"].to<JsonArray>();

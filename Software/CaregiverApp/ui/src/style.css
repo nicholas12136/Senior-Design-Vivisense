@@ -547,6 +547,20 @@ input[type='range']::-moz-range-thumb {
   user-select: none;
 }
 
+/* Tonal settings — hidden when tonal mode not selected */
+.subsection.section-hidden { display: none; }
+
+/* Tonal settings layout */
+.tone-zone { margin-bottom: 1.2rem; }
+.tone-zone-header { display: flex; align-items: center; gap: 0.5rem; font-weight: 600; margin-bottom: 0.5rem; }
+.tone-control-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.35rem; }
+.tone-control-row input[type="range"] { flex: 1; }
+.tone-axis-label { width: 2.8rem; font-size: 0.82rem; color: #a0a0b8; }
+.tone-end-label { font-size: 0.75rem; color: #666680; white-space: nowrap; }
+.tone-val { min-width: 4.5rem; font-size: 0.82rem; color: #c5a8e8; text-align: right; }
+.tone-test-btn { margin-left: 0.4rem; padding: 0.2rem 0.7rem; font-size: 0.78rem; border-radius: 6px; border: 1px solid #764ba2; background: transparent; color: #c5a8e8; cursor: pointer; white-space: nowrap; }
+.tone-test-btn:hover { background: #764ba2; color: #fff; }
+
 /* Mode cards */
 .mode-cards {
   display: flex;

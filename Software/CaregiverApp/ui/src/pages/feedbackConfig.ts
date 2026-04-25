@@ -20,11 +20,21 @@ type FeedbackMode = 'sector' | 'radar';
 type AudioFeedbackMode = 'tonal' | 'verbal';
 type SectorCount = 4 | 6 | 8;
 
+interface ToneSettings {
+  redPitchHz: number;
+  redTempoMs: number;
+  orangePitchHz: number;
+  orangeTempoMs: number;
+  yellowPitchHz: number;
+  yellowTempoMs: number;
+}
+
 interface AdvancedSettings {
   thresholds: { redMax: number; orangeMax: number; yellowMax: number }; // cm
   sectorCount: SectorCount;
   activeSectors: Partial<Record<Sector, boolean>>;
   brightness: number;
+  tones: ToneSettings;
 }
 
 interface ConfigState {
@@ -56,6 +66,11 @@ function defaultState(): ConfigState {
       sectorCount: 6,
       activeSectors: buildDefaultSectors(6),
       brightness: 20,
+      tones: {
+        redPitchHz: 1200, redTempoMs: 150,
+        orangePitchHz: 800, orangeTempoMs: 500,
+        yellowPitchHz: 400, yellowTempoMs: 1000,
+      },
     },
   };
 }
@@ -87,8 +102,29 @@ function refreshPreview(): void {
   el.innerHTML = buildRingSVG(220, advancedColorFn, state.advanced.brightness, true, labels);
 }
 
+function playTestChirp(pitchHz: number): void {
+  const ctx = new AudioContext();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.type = 'sine';
+  osc.frequency.value = pitchHz;
+  gain.gain.setValueAtTime(0.5, ctx.currentTime);
+  osc.start();
+  osc.stop(ctx.currentTime + 0.08);
+  osc.onended = () => ctx.close();
+}
+
+function updateTonalSettingsVisibility(): void {
+  const el = document.getElementById('tonal-settings');
+  if (!el) return;
+  const show = state.audioEnabled && state.selectedAudioMode === 'tonal';
+  el.classList.toggle('section-hidden', !show);
+}
+
 function sendConfig(): void {
-  const { thresholds, sectorCount, brightness } = state.advanced;
+  const { thresholds, sectorCount, brightness, tones } = state.advanced;
   const labels = getSectorLabels(sectorCount);
   const activeSectorsArray = labels.map(s => state.advanced.activeSectors[s] ?? true);
   sendMessage({
@@ -100,8 +136,14 @@ function sendConfig(): void {
     yellowThreshold: thresholds.yellowMax,
     activeSectors: activeSectorsArray,
     renderMode: state.selectedMode === 'radar' ? 1 : 0,
-    audioEnabled: state.audioEnabled,
+    audioEnabled: state.audioEnabled && state.selectedAudioMode === 'tonal',
     visualEnabled: state.visualEnabled,
+    toneRedPitchHz: tones.redPitchHz,
+    toneRedTempoMs: tones.redTempoMs,
+    toneOrangePitchHz: tones.orangePitchHz,
+    toneOrangeTempoMs: tones.orangeTempoMs,
+    toneYellowPitchHz: tones.yellowPitchHz,
+    toneYellowTempoMs: tones.yellowTempoMs,
   });
 }
 
@@ -167,9 +209,28 @@ function applyStatus(msg: Record<string, unknown>): void {
   if (audioEn !== undefined) state.audioEnabled = audioEn;
   if (visualEn !== undefined) state.visualEnabled = visualEn;
 
+  const activeEl = document.activeElement;
+
+  const toneFields: Array<[keyof ToneSettings, string, string]> = [
+    ['redPitchHz',    'tone-red-pitch',    'tone-red-pitch-val'],
+    ['redTempoMs',    'tone-red-tempo',    'tone-red-tempo-val'],
+    ['orangePitchHz', 'tone-orange-pitch', 'tone-orange-pitch-val'],
+    ['orangeTempoMs', 'tone-orange-tempo', 'tone-orange-tempo-val'],
+    ['yellowPitchHz', 'tone-yellow-pitch', 'tone-yellow-pitch-val'],
+    ['yellowTempoMs', 'tone-yellow-tempo', 'tone-yellow-tempo-val'],
+  ];
+  for (const [key, sliderId, valId] of toneFields) {
+    const raw = msg[`tone${key.charAt(0).toUpperCase()}${key.slice(1)}`] as number | undefined;
+    if (raw === undefined) continue;
+    state.advanced.tones[key] = raw;
+    const slider = document.getElementById(sliderId) as HTMLInputElement | null;
+    const valEl  = document.getElementById(valId);
+    if (slider && activeEl !== slider) slider.value = String(raw);
+    if (valEl) valEl.textContent = key.endsWith('Hz') ? `${raw} Hz` : `${raw} ms`;
+  }
+
   const brightSlider = document.getElementById('brightness-slider') as HTMLInputElement | null;
   const brightVal = document.getElementById('brightness-value');
-  const activeEl = document.activeElement;
   if (brightSlider && brightness !== undefined && activeEl !== brightSlider) {
     brightSlider.value = String(brightness);
   }
@@ -197,6 +258,7 @@ function applyStatus(msg: Record<string, unknown>): void {
   if (greenStartsEl && yellowThreshold !== undefined) greenStartsEl.textContent = String(yellowThreshold);
 
   syncSelectedModeCards();
+  updateTonalSettingsVisibility();
 
   if (zoneMode !== undefined || activeSectors !== undefined) {
     document.querySelectorAll<HTMLButtonElement>('.sector-count-btn[data-count]').forEach(btn => {
@@ -251,7 +313,7 @@ export function renderFeedbackConfig(): string {
     <line x1="42" y1="104" x2="78" y2="104" stroke="#764ba2" stroke-width="4.5" stroke-linecap="round"/>
   </svg>`;
 
-  const { thresholds, sectorCount, brightness } = state.advanced;
+  const { thresholds, sectorCount, brightness, tones } = state.advanced;
   const previewSVG = buildRingSVG(220, advancedColorFn, brightness, true, getSectorLabels(sectorCount));
   const sectorTogglesHTML = renderSectorToggles();
 
@@ -326,6 +388,16 @@ export function renderFeedbackConfig(): string {
         <div class="advanced-body" id="advanced-body">
 
           <div class="subsection">
+            <h3 class="subsection-title">Active Sectors</h3>
+            <div class="sector-count-selector">
+              <button class="sector-count-btn${sectorCount === 4 ? ' active' : ''}" data-count="4">4 Sectors</button>
+              <button class="sector-count-btn${sectorCount === 6 ? ' active' : ''}" data-count="6">6 Sectors</button>
+              <button class="sector-count-btn${sectorCount === 8 ? ' active' : ''}" data-count="8">8 Sectors</button>
+            </div>
+            <div class="sector-toggles" id="sector-toggles-container">${sectorTogglesHTML}</div>
+          </div>
+
+          <div class="subsection">
             <h3 class="subsection-title">Distance Thresholds</h3>
             <div class="threshold-control">
               <div class="threshold-row">
@@ -356,14 +428,71 @@ export function renderFeedbackConfig(): string {
             </div>
           </div>
 
-          <div class="subsection">
-            <h3 class="subsection-title">Active Sectors</h3>
-            <div class="sector-count-selector">
-              <button class="sector-count-btn${sectorCount === 4 ? ' active' : ''}" data-count="4">4 Sectors</button>
-              <button class="sector-count-btn${sectorCount === 6 ? ' active' : ''}" data-count="6">6 Sectors</button>
-              <button class="sector-count-btn${sectorCount === 8 ? ' active' : ''}" data-count="8">8 Sectors</button>
+          <div class="subsection${state.audioEnabled && state.selectedAudioMode === 'tonal' ? '' : ' section-hidden'}" id="tonal-settings">
+            <h3 class="subsection-title">Tonal Settings</h3>
+
+            <div class="tone-zone">
+              <div class="tone-zone-header">
+                <span class="color-dot dot-red"></span><span>Red Zone</span>
+              </div>
+              <div class="tone-control-row">
+                <span class="tone-axis-label">Pitch</span>
+                <span class="tone-end-label">Low</span>
+                <input type="range" id="tone-red-pitch" min="200" max="4000" value="${tones.redPitchHz}" />
+                <span class="tone-end-label">High</span>
+                <span class="tone-val" id="tone-red-pitch-val">${tones.redPitchHz} Hz</span>
+              </div>
+              <div class="tone-control-row">
+                <span class="tone-axis-label">Tempo</span>
+                <span class="tone-end-label">Slow</span>
+                <input type="range" id="tone-red-tempo" min="50" max="2000" value="${tones.redTempoMs}" />
+                <span class="tone-end-label">Rapid</span>
+                <span class="tone-val" id="tone-red-tempo-val">${tones.redTempoMs} ms</span>
+                <button class="tone-test-btn" data-zone="red">&#9654; Test</button>
+              </div>
             </div>
-            <div class="sector-toggles" id="sector-toggles-container">${sectorTogglesHTML}</div>
+
+            <div class="tone-zone">
+              <div class="tone-zone-header">
+                <span class="color-dot dot-orange"></span><span>Orange Zone</span>
+              </div>
+              <div class="tone-control-row">
+                <span class="tone-axis-label">Pitch</span>
+                <span class="tone-end-label">Low</span>
+                <input type="range" id="tone-orange-pitch" min="200" max="4000" value="${tones.orangePitchHz}" />
+                <span class="tone-end-label">High</span>
+                <span class="tone-val" id="tone-orange-pitch-val">${tones.orangePitchHz} Hz</span>
+              </div>
+              <div class="tone-control-row">
+                <span class="tone-axis-label">Tempo</span>
+                <span class="tone-end-label">Slow</span>
+                <input type="range" id="tone-orange-tempo" min="50" max="2000" value="${tones.orangeTempoMs}" />
+                <span class="tone-end-label">Rapid</span>
+                <span class="tone-val" id="tone-orange-tempo-val">${tones.orangeTempoMs} ms</span>
+                <button class="tone-test-btn" data-zone="orange">&#9654; Test</button>
+              </div>
+            </div>
+
+            <div class="tone-zone">
+              <div class="tone-zone-header">
+                <span class="color-dot dot-yellow"></span><span>Yellow Zone</span>
+              </div>
+              <div class="tone-control-row">
+                <span class="tone-axis-label">Pitch</span>
+                <span class="tone-end-label">Low</span>
+                <input type="range" id="tone-yellow-pitch" min="200" max="4000" value="${tones.yellowPitchHz}" />
+                <span class="tone-end-label">High</span>
+                <span class="tone-val" id="tone-yellow-pitch-val">${tones.yellowPitchHz} Hz</span>
+              </div>
+              <div class="tone-control-row">
+                <span class="tone-axis-label">Tempo</span>
+                <span class="tone-end-label">Slow</span>
+                <input type="range" id="tone-yellow-tempo" min="50" max="2000" value="${tones.yellowTempoMs}" />
+                <span class="tone-end-label">Rapid</span>
+                <span class="tone-val" id="tone-yellow-tempo-val">${tones.yellowTempoMs} ms</span>
+                <button class="tone-test-btn" data-zone="yellow">&#9654; Test</button>
+              </div>
+            </div>
           </div>
 
           <div class="subsection">
@@ -411,6 +540,7 @@ export function initFeedbackConfig(): void {
     audioEnableBtn.classList.toggle('active', state.audioEnabled);
     audioEnableBtn.textContent = state.audioEnabled ? 'Enabled' : 'Disabled';
     audioModeCards?.classList.toggle('section-disabled', !state.audioEnabled);
+    updateTonalSettingsVisibility();
     sendConfig();
   });
 
@@ -441,6 +571,37 @@ export function initFeedbackConfig(): void {
       state.selectedAudioMode = mode;
       document.querySelectorAll('.mode-card[data-audio-mode]').forEach(c => c.classList.remove('selected'));
       card.classList.add('selected');
+      updateTonalSettingsVisibility();
+    });
+  });
+
+  // Tone pitch/tempo sliders
+  type ToneSliderDef = { sliderId: string; valId: string; key: keyof ToneSettings; unit: string };
+  const toneSliders: ToneSliderDef[] = [
+    { sliderId: 'tone-red-pitch',    valId: 'tone-red-pitch-val',    key: 'redPitchHz',    unit: 'Hz' },
+    { sliderId: 'tone-red-tempo',    valId: 'tone-red-tempo-val',    key: 'redTempoMs',    unit: 'ms' },
+    { sliderId: 'tone-orange-pitch', valId: 'tone-orange-pitch-val', key: 'orangePitchHz', unit: 'Hz' },
+    { sliderId: 'tone-orange-tempo', valId: 'tone-orange-tempo-val', key: 'orangeTempoMs', unit: 'ms' },
+    { sliderId: 'tone-yellow-pitch', valId: 'tone-yellow-pitch-val', key: 'yellowPitchHz', unit: 'Hz' },
+    { sliderId: 'tone-yellow-tempo', valId: 'tone-yellow-tempo-val', key: 'yellowTempoMs', unit: 'ms' },
+  ];
+  for (const { sliderId, valId, key, unit } of toneSliders) {
+    const slider = document.getElementById(sliderId) as HTMLInputElement | null;
+    const valEl  = document.getElementById(valId);
+    slider?.addEventListener('input', () => {
+      const v = Number(slider.value);
+      state.advanced.tones[key] = v;
+      if (valEl) valEl.textContent = `${v} ${unit}`;
+      sendConfig();
+    });
+  }
+
+  // Tone test buttons — play chirp in browser via Web Audio API
+  document.querySelectorAll<HTMLButtonElement>('.tone-test-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const zone = btn.dataset['zone'] as 'red' | 'orange' | 'yellow';
+      const pitchMap = { red: 'redPitchHz', orange: 'orangePitchHz', yellow: 'yellowPitchHz' } as const;
+      playTestChirp(state.advanced.tones[pitchMap[zone]]);
     });
   });
 

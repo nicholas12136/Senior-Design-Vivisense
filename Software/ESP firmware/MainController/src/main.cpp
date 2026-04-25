@@ -105,6 +105,19 @@ const float NO_OBSTACLE_MM = 1.0e9f;
 bool obstacleAudioEnabled = true;
 int  currentVolume         = 255;
 
+// Tonal chirp settings — defaults match CaregiverApp defaults.
+uint16_t toneRedPitchHz    = 1200;
+uint16_t toneRedTempoMs    =  150;
+uint16_t toneOrangePitchHz =  800;
+uint16_t toneOrangeTempoMs =  500;
+uint16_t toneYellowPitchHz =  400;
+uint16_t toneYellowTempoMs = 1000;
+
+static constexpr uint16_t CHIRP_DURATION_MS = 80;
+float    latestClosestMmByZone[8] = {};  // updated every proximity period
+uint32_t lastChirpMs              = 0;
+bool     navAudioPlaying          = false;
+
 // Sent by CaregiverApp when the caregiver changes settings in the browser UI.
 struct ConfigPacket
 {
@@ -119,7 +132,13 @@ struct ConfigPacket
   uint8_t  render_mode;
   uint8_t  active_sectors;     // bitmask — bit N = zone N enabled
   uint8_t  volume;             // 0–255 audio volume
-} __attribute__((packed));     // 14 bytes
+  uint16_t red_pitch_hz;       // tonal chirp frequency for red zone (Hz)
+  uint16_t red_tempo_ms;       // tonal chirp interval for red zone (ms)
+  uint16_t orange_pitch_hz;
+  uint16_t orange_tempo_ms;
+  uint16_t yellow_pitch_hz;
+  uint16_t yellow_tempo_ms;
+} __attribute__((packed));     // 26 bytes
 
 struct ComponentStatusPacket
 {
@@ -196,6 +215,7 @@ void computeZoneProximityFromPolar(float closestMmByZone[8]);
 int polarRingIndexFromDistance(float distMm);
 float polarRepresentativeDistanceForRing(int ringIndex);
 void emitDetectionDebugFrame(const float closestMmByZone[8]);
+void serviceProximityAudio();
 static int proximityZoneIndex(float angleDeg, int numZones);
 static int clampInt(int v, int lo, int hi);
 static uint8_t colorForDistanceMm(float distMm);
@@ -461,6 +481,12 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
     proximityLedRenderMode = (uint8_t)clampInt((int)cfg.render_mode, 0, 1);
     proximityActiveSectors = cfg.active_sectors;
     currentVolume          = cfg.volume;
+    toneRedPitchHz         = cfg.red_pitch_hz;
+    toneRedTempoMs         = cfg.red_tempo_ms;
+    toneOrangePitchHz      = cfg.orange_pitch_hz;
+    toneOrangeTempoMs      = cfg.orange_tempo_ms;
+    toneYellowPitchHz      = cfg.yellow_pitch_hz;
+    toneYellowTempoMs      = cfg.yellow_tempo_ms;
     applyProximityThresholds(cfg.red_threshold_mm, cfg.orange_threshold_mm, cfg.yellow_threshold_mm);
     if (!proximityVisualEnabled)
     {
@@ -834,18 +860,20 @@ void emitDetectionDebugFrame(const float closestMmByZone[8])
 
 void updateAndBroadcastLedFrame()
 {
-  // Build the latest zone distances from the polar filter, emit debug serial,
-  // then send a render frame for LEDRingController.
-  float closestMmByZone[8];
+  // Always update the polar grid and zone distances — audio needs this even when
+  // visual is disabled.
   uint8_t hitMask[POLAR_BIN_COUNT];
   accumulatePolarHits(hitMask);
   updatePolarGrid(hitMask);
-  computeZoneProximityFromPolar(closestMmByZone);
+  computeZoneProximityFromPolar(latestClosestMmByZone);
+  emitDetectionDebugFrame(latestClosestMmByZone);
 
-  emitDetectionDebugFrame(closestMmByZone);
-  LedFrame_t frame = {};
-  buildLedFrame(closestMmByZone, frame);
-  broadcastLedFrame(frame);
+  if (proximityVisualEnabled)
+  {
+    LedFrame_t frame = {};
+    buildLedFrame(latestClosestMmByZone, frame);
+    broadcastLedFrame(frame);
+  }
 }
 
 void sendClearLedFrame()
@@ -1192,16 +1220,19 @@ void setupI2S()
 
 void playNavigationAudio(const unsigned char* audioData, unsigned int dataLen, unsigned int sampleRate)
 {
+  navAudioPlaying = true;
   Serial.printf("[NavAudio] received len=%u rate=%u vol=%d obstacle_audio=%d\n",
                 dataLen, sampleRate, currentVolume, obstacleAudioEnabled ? 1 : 0);
   if (dataLen == 0)
   {
     Serial.println("[NavAudio] Skipped empty clip");
+    navAudioPlaying = false;
     return;
   }
   if (currentVolume <= 0)
   {
     Serial.println("[NavAudio] Skipped because volume is 0");
+    navAudioPlaying = false;
     return;
   }
 
@@ -1260,6 +1291,8 @@ void playNavigationAudio(const unsigned char* audioData, unsigned int dataLen, u
                   (unsigned int)writeCalls);
   }
   i2s_zero_dma_buffer(I2S_PORT);
+  navAudioPlaying = false;
+  lastChirpMs = millis();  // brief gap before chirps resume after nav audio
 }
 
 void playObstacleAudio(const unsigned char* audioData, unsigned int dataLen, unsigned int sampleRate)
@@ -1269,6 +1302,87 @@ void playObstacleAudio(const unsigned char* audioData, unsigned int dataLen, uns
     return;
   }
   playNavigationAudio(audioData, dataLen, sampleRate);
+}
+
+void playToneChirp(uint16_t freqHz, uint16_t durationMs)
+{
+  if (!obstacleAudioEnabled || currentVolume <= 0) return;
+
+  i2s_set_sample_rates(I2S_PORT, 16000);
+
+  const uint32_t sampleRate   = 16000;
+  const uint32_t totalSamples = (sampleRate * (uint32_t)durationMs) / 1000;
+  const float    volFactor    = (float)currentVolume / 255.0f;
+  const float    twoPiF       = 2.0f * 3.14159265f * (float)freqHz;
+
+  int16_t  buf[128];
+  int      bufIdx      = 0;
+  size_t   bytesWritten = 0;
+
+  for (uint32_t i = 0; i < totalSamples; i++)
+  {
+    float   t   = (float)i / (float)sampleRate;
+    int16_t smp = (int16_t)(sinf(twoPiF * t) * 32767.0f * volFactor);
+    buf[bufIdx++] = smp;  // Left
+    buf[bufIdx++] = smp;  // Right
+    if (bufIdx >= 128)
+    {
+      i2s_write(I2S_PORT, buf, sizeof(buf), &bytesWritten, portMAX_DELAY);
+      bufIdx = 0;
+    }
+  }
+  if (bufIdx > 0)
+    i2s_write(I2S_PORT, buf, (size_t)bufIdx * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
+
+  i2s_zero_dma_buffer(I2S_PORT);
+}
+
+void serviceProximityAudio()
+{
+  if (!obstacleAudioEnabled || navAudioPlaying) return;
+
+  // Find the closest obstacle across all active sectors.
+  float closestMm = NO_OBSTACLE_MM;
+  for (int z = 0; z < proximityNumZones; z++)
+  {
+    if (!(proximityActiveSectors & (1 << z))) continue;
+    if (latestClosestMmByZone[z] < closestMm)
+      closestMm = latestClosestMmByZone[z];
+  }
+
+  // Map distance to zone tier and select pitch/tempo.
+  uint16_t pitchHz = 0;
+  uint16_t tempoMs = 0;
+  if (closestMm <= proximityRedThresholdMm)
+  {
+    pitchHz = toneRedPitchHz;
+    tempoMs = toneRedTempoMs;
+  }
+  else if (closestMm <= proximityOrangeThresholdMm)
+  {
+    pitchHz = toneOrangePitchHz;
+    tempoMs = toneOrangeTempoMs;
+  }
+  else if (closestMm <= proximityYellowThresholdMm)
+  {
+    pitchHz = toneYellowPitchHz;
+    tempoMs = toneYellowTempoMs;
+  }
+  else
+  {
+    // No obstacle within alert range — reset chirp timer so the next
+    // detection starts a fresh cycle rather than firing immediately.
+    lastChirpMs = millis();
+    return;
+  }
+
+  // Fire chirp if the tempo interval has elapsed.
+  uint32_t nowMs = millis();
+  if ((nowMs - lastChirpMs) >= (uint32_t)tempoMs)
+  {
+    lastChirpMs = nowMs;
+    playToneChirp(pitchHz, CHIRP_DURATION_MS);
+  }
 }
 
 // =========================================================
@@ -1290,6 +1404,8 @@ void setup()
   delay(200);
   Serial.println();
   Serial.println("Base receiver minimal ESP-NOW point converter");
+
+  for (int i = 0; i < 8; i++) latestClosestMmByZone[i] = NO_OBSTACLE_MM;
 
   setupI2S();
   configureSensors();
@@ -1338,8 +1454,9 @@ void loop()
   processPendingSensors();
   emitReceiverStatusIfDue();
 
-  // Broadcast render frames to LEDRingController at configured update rate.
-  if (proximityVisualEnabled && broadcastPeerAdded)
+  // Update polar grid and zone distances at configured rate.
+  // Runs regardless of visual enable so audio always has fresh data.
+  if (broadcastPeerAdded)
   {
     uint32_t nowMs = millis();
     if ((nowMs - lastProximityBroadcastMs) >= proximityPeriodMs)
@@ -1349,6 +1466,7 @@ void loop()
     }
   }
 
+  serviceProximityAudio();
   delay(1);
 }
 
