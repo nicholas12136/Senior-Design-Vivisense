@@ -52,7 +52,7 @@ export function renderController(): string {
 
       <!-- Custom buttons -->
       <div class="custom-grid">
-        <div class="custom-btn filled">Stay on<br>the line</div>
+        <div class="custom-btn filled" data-action="stayonline">Stay on<br>the line</div>
         <div class="custom-btn empty"></div>
         <div class="custom-btn empty"></div>
         <div class="custom-btn empty"></div>

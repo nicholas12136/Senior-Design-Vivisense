@@ -102,8 +102,9 @@ const float NO_OBSTACLE_MM = 1.0e9f;
 #define I2S_DO_IO   25
 #define I2S_PORT    I2S_NUM_0
 
-bool obstacleAudioEnabled = true;
-int  currentVolume         = 255;
+bool obstacleAudioEnabled = false;
+int  currentVolume        = 255;  // navigation command audio volume
+int  obstacleVolume       = 200;  // obstacle feedback audio volume (tonal + verbal)
 
 // Tonal chirp settings — defaults match CaregiverApp defaults.
 uint16_t toneRedPitchHz    = 1200;
@@ -113,9 +114,12 @@ uint16_t toneOrangeTempoMs =  500;
 uint16_t toneYellowPitchHz =  400;
 uint16_t toneYellowTempoMs = 1000;
 
-static constexpr uint16_t CHIRP_DURATION_MS = 80;
-float    latestClosestMmByZone[8] = {};  // updated every proximity period
+static constexpr uint16_t CHIRP_DURATION_MS  = 80;
+static constexpr uint32_t VERBAL_COOLDOWN_MS = 3000;
+uint8_t  obstacleAudioMode        = 0;    // 0=tonal, 1=verbal
+float    latestClosestMmByZone[8] = {};   // updated every proximity period
 uint32_t lastChirpMs              = 0;
+uint32_t lastVerbalMs             = 0;
 bool     navAudioPlaying          = false;
 
 // Sent by CaregiverApp when the caregiver changes settings in the browser UI.
@@ -138,7 +142,9 @@ struct ConfigPacket
   uint16_t orange_tempo_ms;
   uint16_t yellow_pitch_hz;
   uint16_t yellow_tempo_ms;
-} __attribute__((packed));     // 26 bytes
+  uint8_t  audio_mode;         // 0=tonal, 1=verbal
+  uint8_t  obstacle_volume;    // 0-255 volume for obstacle audio only
+} __attribute__((packed));     // 28 bytes
 
 struct ComponentStatusPacket
 {
@@ -232,6 +238,7 @@ void handleSerialCommand(char *line);
 void serviceSerialCommands();
 void broadcastComponentStatus();
 void setupI2S();
+static void playClipRaw(const unsigned char* data, unsigned int len, unsigned int rate);
 void playNavigationAudio(const unsigned char* audioData, unsigned int dataLen, unsigned int sampleRate);
 void playObstacleAudio(const unsigned char* audioData, unsigned int dataLen, unsigned int sampleRate);
 void handleStop();
@@ -487,6 +494,8 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
     toneOrangeTempoMs      = cfg.orange_tempo_ms;
     toneYellowPitchHz      = cfg.yellow_pitch_hz;
     toneYellowTempoMs      = cfg.yellow_tempo_ms;
+    obstacleAudioMode      = cfg.audio_mode;
+    obstacleVolume         = cfg.obstacle_volume;
     applyProximityThresholds(cfg.red_threshold_mm, cfg.orange_threshold_mm, cfg.yellow_threshold_mm);
     if (!proximityVisualEnabled)
     {
@@ -1218,6 +1227,58 @@ void setupI2S()
   i2s_set_pin(I2S_PORT, &pins);
 }
 
+// Plays a single PCM clip over I2S without touching navAudioPlaying or lastChirpMs.
+// Used to chain multiple clips (e.g. direction + proximity word) in one verbal alert.
+static void playClipRaw(const unsigned char* data, unsigned int len, unsigned int rate)
+{
+  if (len == 0 || obstacleVolume <= 0) return;
+  i2s_set_sample_rates(I2S_PORT, rate);
+  float   volFactor = (float)obstacleVolume / 255.0f;
+  int16_t buf[128];
+  int     bufIdx = 0;
+  for (unsigned int i = 0; i + 1 < len; i += 2)
+  {
+    uint8_t lo  = pgm_read_byte(&data[i]);
+    uint8_t hi  = pgm_read_byte(&data[i + 1]);
+    int16_t smp = (int16_t)((int16_t)((hi << 8) | lo) * volFactor);
+    buf[bufIdx++] = smp;
+    buf[bufIdx++] = smp;
+    if (bufIdx >= 128)
+    {
+      size_t written;
+      i2s_write(I2S_PORT, buf, sizeof(buf), &written, portMAX_DELAY);
+      bufIdx = 0;
+    }
+  }
+  if (bufIdx > 0)
+  {
+    size_t written;
+    i2s_write(I2S_PORT, buf, (size_t)bufIdx * sizeof(int16_t), &written, portMAX_DELAY);
+  }
+  i2s_zero_dma_buffer(I2S_PORT);
+}
+
+// Maps a zone index to a direction audio clip based on the active sector count.
+// Sector ordering: 4=['N','E','S','W'], 6=['N','NE','SE','S','SW','NW'], 8=['N','NE','E','SE','S','SW','W','NW']
+static void directionAudioForZone(int zoneIdx, int numZones,
+                                   const unsigned char** outData,
+                                   unsigned int* outLen, unsigned int* outRate)
+{
+  // 0=ahead, 1=right, 2=behind, 3=left
+  static const int dir4[4] = {0, 1, 2, 3};
+  static const int dir6[6] = {0, 1, 1, 2, 3, 3};
+  static const int dir8[8] = {0, 0, 1, 1, 2, 3, 3, 0};
+  const int* dirs = (numZones == 8) ? dir8 : (numZones == 4) ? dir4 : dir6;
+  int dir = (zoneIdx >= 0 && zoneIdx < numZones) ? dirs[zoneIdx] : 0;
+  switch (dir)
+  {
+    case 1:  *outData = right_data;  *outLen = right_len;  *outRate = right_rate;  break;
+    case 2:  *outData = behind_data; *outLen = behind_len; *outRate = behind_rate; break;
+    case 3:  *outData = left_data;   *outLen = left_len;   *outRate = left_rate;   break;
+    default: *outData = ahead_data;  *outLen = ahead_len;  *outRate = ahead_rate;  break;
+  }
+}
+
 void playNavigationAudio(const unsigned char* audioData, unsigned int dataLen, unsigned int sampleRate)
 {
   navAudioPlaying = true;
@@ -1306,13 +1367,13 @@ void playObstacleAudio(const unsigned char* audioData, unsigned int dataLen, uns
 
 void playToneChirp(uint16_t freqHz, uint16_t durationMs)
 {
-  if (!obstacleAudioEnabled || currentVolume <= 0) return;
+  if (!obstacleAudioEnabled || obstacleVolume <= 0) return;
 
   i2s_set_sample_rates(I2S_PORT, 16000);
 
   const uint32_t sampleRate   = 16000;
   const uint32_t totalSamples = (sampleRate * (uint32_t)durationMs) / 1000;
-  const float    volFactor    = (float)currentVolume / 255.0f;
+  const float    volFactor    = (float)obstacleVolume / 255.0f;
   const float    twoPiF       = 2.0f * 3.14159265f * (float)freqHz;
 
   int16_t  buf[128];
@@ -1341,47 +1402,83 @@ void serviceProximityAudio()
 {
   if (!obstacleAudioEnabled || navAudioPlaying) return;
 
-  // Find the closest obstacle across all active sectors.
-  float closestMm = NO_OBSTACLE_MM;
+  // Find the closest obstacle and which zone it's in.
+  float closestMm   = NO_OBSTACLE_MM;
+  int   closestZone = 0;
   for (int z = 0; z < proximityNumZones; z++)
   {
     if (!(proximityActiveSectors & (1 << z))) continue;
     if (latestClosestMmByZone[z] < closestMm)
-      closestMm = latestClosestMmByZone[z];
+    {
+      closestMm   = latestClosestMmByZone[z];
+      closestZone = z;
+    }
   }
 
-  // Map distance to zone tier and select pitch/tempo.
-  uint16_t pitchHz = 0;
-  uint16_t tempoMs = 0;
-  if (closestMm <= proximityRedThresholdMm)
+  if (closestMm > proximityYellowThresholdMm)
   {
-    pitchHz = toneRedPitchHz;
-    tempoMs = toneRedTempoMs;
-  }
-  else if (closestMm <= proximityOrangeThresholdMm)
-  {
-    pitchHz = toneOrangePitchHz;
-    tempoMs = toneOrangeTempoMs;
-  }
-  else if (closestMm <= proximityYellowThresholdMm)
-  {
-    pitchHz = toneYellowPitchHz;
-    tempoMs = toneYellowTempoMs;
-  }
-  else
-  {
-    // No obstacle within alert range — reset chirp timer so the next
-    // detection starts a fresh cycle rather than firing immediately.
-    lastChirpMs = millis();
+    // No obstacle within alert range — reset timers so the next detection
+    // starts a fresh cycle rather than firing immediately.
+    lastChirpMs  = millis();
+    lastVerbalMs = millis();
     return;
   }
 
-  // Fire chirp if the tempo interval has elapsed.
-  uint32_t nowMs = millis();
-  if ((nowMs - lastChirpMs) >= (uint32_t)tempoMs)
+  if (obstacleAudioMode == 1)
   {
-    lastChirpMs = nowMs;
-    playToneChirp(pitchHz, CHIRP_DURATION_MS);
+    // ── Verbal mode ──────────────────────────────────────────────────────────
+    uint32_t nowMs = millis();
+    if ((nowMs - lastVerbalMs) < VERBAL_COOLDOWN_MS) return;
+    lastVerbalMs = nowMs;
+
+    const unsigned char* dirData; unsigned int dirLen, dirRate;
+    directionAudioForZone(closestZone, proximityNumZones, &dirData, &dirLen, &dirRate);
+
+    // Proximity word: "very close" for red, "close" for orange, nothing for yellow.
+    const unsigned char* proxData = nullptr;
+    unsigned int proxLen = 0, proxRate = 16000;
+    if (closestMm <= proximityRedThresholdMm)
+    {
+      proxData = very_close_data; proxLen = very_close_len; proxRate = very_close_rate;
+    }
+    else if (closestMm <= proximityOrangeThresholdMm)
+    {
+      proxData = close_data; proxLen = close_len; proxRate = close_rate;
+    }
+
+    navAudioPlaying = true;
+    if (proxData) playClipRaw(proxData, proxLen, proxRate);
+    playClipRaw(dirData, dirLen, dirRate);
+    navAudioPlaying = false;
+    lastChirpMs = millis();
+  }
+  else
+  {
+    // ── Tonal mode ───────────────────────────────────────────────────────────
+    uint16_t pitchHz = 0;
+    uint16_t tempoMs = 0;
+    if (closestMm <= proximityRedThresholdMm)
+    {
+      pitchHz = toneRedPitchHz;
+      tempoMs = toneRedTempoMs;
+    }
+    else if (closestMm <= proximityOrangeThresholdMm)
+    {
+      pitchHz = toneOrangePitchHz;
+      tempoMs = toneOrangeTempoMs;
+    }
+    else
+    {
+      pitchHz = toneYellowPitchHz;
+      tempoMs = toneYellowTempoMs;
+    }
+
+    uint32_t nowMs = millis();
+    if ((nowMs - lastChirpMs) >= (uint32_t)tempoMs)
+    {
+      lastChirpMs = nowMs;
+      playToneChirp(pitchHz, CHIRP_DURATION_MS);
+    }
   }
 }
 
@@ -1396,7 +1493,7 @@ void handleTurnRight() { Serial.println("Nav: Right");     playNavigationAudio(t
 void handleSpeedUp()   { Serial.println("Nav: Speed Up");  playNavigationAudio(speed_up_data,   speed_up_len,   speed_up_rate);   }
 void handleSlowDown()  { Serial.println("Nav: Slow Down"); playNavigationAudio(slow_down_data,  slow_down_len,  slow_down_rate);  }
 void handleBackUp()    { Serial.println("Nav: Back Up");   playNavigationAudio(back_up_data,    back_up_len,    back_up_rate);    }
-void handleSpeak()     { Serial.println("Nav: Speak");     /* TODO: future verbal override */ }
+void handleSpeak()     { Serial.println("Nav: Speak");     playNavigationAudio(stay_on_line_data, stay_on_line_len, stay_on_line_rate); }
 
 void setup()
 {

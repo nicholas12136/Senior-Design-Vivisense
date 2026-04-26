@@ -85,7 +85,9 @@ struct __attribute__((packed)) ConfigPacket {
   uint16_t orange_tempo_ms;
   uint16_t yellow_pitch_hz;
   uint16_t yellow_tempo_ms;
-};                             // 26 bytes
+  uint8_t  audio_mode;         // 0=tonal, 1=verbal
+  uint8_t  obstacle_volume;    // 0-255 volume for obstacle audio only
+};                             // 28 bytes
 
 struct __attribute__((packed)) ComponentStatusPacket {
   uint8_t msg_type;
@@ -162,6 +164,8 @@ static int brightnessPercentFromRaw(int raw)
 
 bool audioEnabled  = true;   // play audio during obstacle detection
 bool visualEnabled = true;   // light LEDs during obstacle detection
+uint8_t audioMode       = 0;    // 0=tonal, 1=verbal
+uint8_t obstacleVolume  = 200;  // 0-255 volume for obstacle audio
 
 // Tonal chirp defaults — pitch (Hz) and interval (ms) per zone.
 uint16_t toneRedPitchHz    = 1200;
@@ -351,6 +355,8 @@ void sendConfigToMainController(int overrideVisualEnabled = -1)
   cfg.orange_tempo_ms     = toneOrangeTempoMs;
   cfg.yellow_pitch_hz     = toneYellowPitchHz;
   cfg.yellow_tempo_ms     = toneYellowTempoMs;
+  cfg.audio_mode          = audioMode;
+  cfg.obstacle_volume     = obstacleVolume;
   esp_err_t err = esp_now_send(MAIN_CONTROLLER_MAC, (const uint8_t *)&cfg, sizeof(cfg));
   if (err != ESP_OK) Serial.printf("[ESP-NOW] Config send error: 0x%x\n", err);
 }
@@ -863,9 +869,11 @@ void handleWebSocketMessage(const char* msg) {
     if (!doc["toneOrangeTempoMs"].isNull()) toneOrangeTempoMs = (uint16_t)constrain(doc["toneOrangeTempoMs"].as<int>(), 50,  2000);
     if (!doc["toneYellowPitchHz"].isNull()) toneYellowPitchHz = (uint16_t)constrain(doc["toneYellowPitchHz"].as<int>(), 200, 4000);
     if (!doc["toneYellowTempoMs"].isNull()) toneYellowTempoMs = (uint16_t)constrain(doc["toneYellowTempoMs"].as<int>(), 50,  2000);
-    Serial.printf("[Config] zoneMode=%d  brightness=%d%%  audio=%s  visual=%s\n",
+    if (!doc["audioMode"].isNull())        audioMode = (uint8_t)constrain(doc["audioMode"].as<int>(), 0, 1);
+    if (!doc["obstacleVolume"].isNull())   obstacleVolume = (uint8_t)constrain(doc["obstacleVolume"].as<int>(), 0, 255);
+    Serial.printf("[Config] zoneMode=%d  brightness=%d%%  audio=%s  visual=%s  audioMode=%d\n",
                   currentZoneMode, brightnessPercentFromRaw(currentBrightness),
-                  audioEnabled ? "on" : "off", visualEnabled ? "on" : "off");
+                  audioEnabled ? "on" : "off", visualEnabled ? "on" : "off", (int)audioMode);
 
     // Relay updated settings to MainController so its zone computation matches.
     // While preview is active, keep MainController visual output disabled so it
@@ -882,6 +890,7 @@ void handleWebSocketMessage(const char* msg) {
     else if (strcmp(action, "speedup")  == 0) handleSpeedUp();
     else if (strcmp(action, "slowdown") == 0) handleSlowDown();
     else if (strcmp(action, "speak")    == 0) handleSpeak();
+    else if (strcmp(action, "stayonline") == 0) handleSpeak();
 
   } else if (strcmp(type, "volume") == 0) {
     currentVolume = constrain(doc["level"].as<int>(), 0, 255);
@@ -990,6 +999,8 @@ void sendStatus(AsyncWebSocketClient* client) {
   doc["toneOrangeTempoMs"] = toneOrangeTempoMs;
   doc["toneYellowPitchHz"] = toneYellowPitchHz;
   doc["toneYellowTempoMs"] = toneYellowTempoMs;
+  doc["audioMode"]         = (int)audioMode;
+  doc["obstacleVolume"]    = (int)obstacleVolume;
   JsonArray arr = doc["activeSectors"].to<JsonArray>();
   for (int i = 0; i < currentZoneMode; i++) arr.add(currentActiveSectors[i]);
   JsonArray sensors = doc["sensorOnline"].to<JsonArray>();

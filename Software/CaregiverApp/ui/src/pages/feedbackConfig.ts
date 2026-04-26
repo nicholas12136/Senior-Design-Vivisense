@@ -5,14 +5,7 @@ import {
   SECTOR_LABELS_4,
   SECTOR_LABELS_6,
   SECTOR_LABELS_8,
-  RED,
-  ORANGE,
-  YELLOW,
-  GREEN,
-  BLUE,
-  LED_OFF,
   type Sector,
-  type LEDPosition,
 } from '../utils/ledRing.js';
 import { sendMessage, onMessage, offMessage } from '../utils/websocket.js';
 
@@ -42,6 +35,7 @@ interface ConfigState {
   visualEnabled: boolean;
   selectedMode: FeedbackMode;
   selectedAudioMode: AudioFeedbackMode | null;
+  obstacleVolume: number;
   advanced: AdvancedSettings;
 }
 
@@ -57,10 +51,11 @@ function buildDefaultSectors(count: SectorCount): Partial<Record<Sector, boolean
 
 function defaultState(): ConfigState {
   return {
-    audioEnabled: true,
+    audioEnabled: false,
     visualEnabled: true,
     selectedMode: 'sector',
     selectedAudioMode: null,
+    obstacleVolume: 200,
     advanced: {
       thresholds: { redMax: 60, orangeMax: 105, yellowMax: 150 },
       sectorCount: 6,
@@ -76,45 +71,8 @@ function defaultState(): ConfigState {
 }
 
 let state: ConfigState = defaultState();
-let previewActive = false;
 let configStatusHandler: ((data: unknown) => void) | null = null;
 
-// Approximate ring distances in cm for preview ring coloring (outer -> inner).
-const RING_DISTANCES_CM = [280, 220, 160, 110, 60, 0];
-
-function getColorForDistance(distanceCm: number): string {
-  if (distanceCm <= state.advanced.thresholds.redMax) return RED;
-  if (distanceCm <= state.advanced.thresholds.orangeMax) return ORANGE;
-  if (distanceCm <= state.advanced.thresholds.yellowMax) return YELLOW;
-  return GREEN;
-}
-
-function advancedColorFn(led: LEDPosition): string {
-  if (led.ring === 5) return BLUE;
-  if (!state.advanced.activeSectors[led.sector]) return LED_OFF;
-  return getColorForDistance(RING_DISTANCES_CM[led.ring] ?? 9999);
-}
-
-function refreshPreview(): void {
-  const el = document.getElementById('advanced-preview');
-  if (!el) return;
-  const labels = getSectorLabels(state.advanced.sectorCount);
-  el.innerHTML = buildRingSVG(220, advancedColorFn, state.advanced.brightness, true, labels);
-}
-
-function playTestChirp(pitchHz: number): void {
-  const ctx = new AudioContext();
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  osc.connect(gain);
-  gain.connect(ctx.destination);
-  osc.type = 'sine';
-  osc.frequency.value = pitchHz;
-  gain.gain.setValueAtTime(0.5, ctx.currentTime);
-  osc.start();
-  osc.stop(ctx.currentTime + 0.08);
-  osc.onended = () => ctx.close();
-}
 
 function updateTonalSettingsVisibility(): void {
   const el = document.getElementById('tonal-settings');
@@ -136,7 +94,9 @@ function sendConfig(): void {
     yellowThreshold: thresholds.yellowMax,
     activeSectors: activeSectorsArray,
     renderMode: state.selectedMode === 'radar' ? 1 : 0,
-    audioEnabled: state.audioEnabled && state.selectedAudioMode === 'tonal',
+    audioEnabled: state.audioEnabled && state.selectedAudioMode !== null,
+    audioMode: state.selectedAudioMode === 'verbal' ? 1 : 0,
+    obstacleVolume: state.obstacleVolume,
     visualEnabled: state.visualEnabled,
     toneRedPitchHz: tones.redPitchHz,
     toneRedTempoMs: tones.redTempoMs,
@@ -147,25 +107,6 @@ function sendConfig(): void {
   });
 }
 
-function sendPreview(active: boolean): void {
-  if (!active) {
-    sendMessage({ type: 'preview', active: false });
-    return;
-  }
-  const { thresholds, sectorCount, brightness } = state.advanced;
-  const labels = getSectorLabels(sectorCount);
-  const activeSectorsArray = labels.map(s => state.advanced.activeSectors[s] ?? true);
-  sendMessage({
-    type: 'preview',
-    active: true,
-    zoneMode: sectorCount,
-    brightness,
-    redThreshold: thresholds.redMax,
-    orangeThreshold: thresholds.orangeMax,
-    yellowThreshold: thresholds.yellowMax,
-    activeSectors: activeSectorsArray,
-  });
-}
 
 function renderSectorToggles(): string {
   return getSectorLabels(state.advanced.sectorCount).map(sector => {
@@ -190,6 +131,7 @@ function applyStatus(msg: Record<string, unknown>): void {
   const activeSectors = msg['activeSectors'] as boolean[] | undefined;
   const audioEn = msg['audioEnabled'] as boolean | undefined;
   const visualEn = msg['visualEnabled'] as boolean | undefined;
+  const obstacleVol = msg['obstacleVolume'] as number | undefined;
 
   if (zoneMode !== undefined && ([4, 6, 8] as number[]).includes(zoneMode)) {
     state.advanced.sectorCount = zoneMode as SectorCount;
@@ -206,7 +148,8 @@ function applyStatus(msg: Record<string, unknown>): void {
       state.advanced.activeSectors[s] = activeSectors[i] ?? true;
     });
   }
-  if (audioEn !== undefined) state.audioEnabled = audioEn;
+  // audioEnabled is not synced from status — the ESP32 echoes back the computed value
+  // (audioEnabled && tonal), not the raw toggle, so syncing it would overwrite the UI state.
   if (visualEn !== undefined) state.visualEnabled = visualEn;
 
   const activeEl = document.activeElement;
@@ -235,6 +178,14 @@ function applyStatus(msg: Record<string, unknown>): void {
     brightSlider.value = String(brightness);
   }
   if (brightVal && brightness !== undefined) brightVal.textContent = `${brightness}%`;
+
+  if (obstacleVol !== undefined) state.obstacleVolume = obstacleVol;
+  const obsVolSlider = document.getElementById('obstacle-volume-slider') as HTMLInputElement | null;
+  const obsVolVal = document.getElementById('obstacle-volume-value');
+  if (obsVolSlider && obstacleVol !== undefined && activeEl !== obsVolSlider) {
+    obsVolSlider.value = String(Math.round(obstacleVol / 2.55));
+  }
+  if (obsVolVal && obstacleVol !== undefined) obsVolVal.textContent = `${Math.round(obstacleVol / 2.55)}%`;
 
   const redSlider = document.getElementById('threshold-red') as HTMLInputElement | null;
   const redValEl = document.getElementById('red-threshold-val');
@@ -287,7 +238,6 @@ function applyStatus(msg: Record<string, unknown>): void {
   }
   visualModeCards?.classList.toggle('section-disabled', !state.visualEnabled);
 
-  refreshPreview();
 }
 
 export function renderFeedbackConfig(): string {
@@ -314,7 +264,6 @@ export function renderFeedbackConfig(): string {
   </svg>`;
 
   const { thresholds, sectorCount, brightness, tones } = state.advanced;
-  const previewSVG = buildRingSVG(220, advancedColorFn, brightness, true, getSectorLabels(sectorCount));
   const sectorTogglesHTML = renderSectorToggles();
 
   return `
@@ -430,6 +379,10 @@ export function renderFeedbackConfig(): string {
 
           <div class="subsection${state.audioEnabled && state.selectedAudioMode === 'tonal' ? '' : ' section-hidden'}" id="tonal-settings">
             <h3 class="subsection-title">Tonal Settings</h3>
+            <div class="subsection">
+              <h3 class="subsection-title">Obstacle Audio Volume - <span id="obstacle-volume-value">${Math.round(state.obstacleVolume / 2.55)}%</span></h3>
+              <input type="range" id="obstacle-volume-slider" min="0" max="100" value="${Math.round(state.obstacleVolume / 2.55)}" />
+            </div>
 
             <div class="tone-zone">
               <div class="tone-zone-header">
@@ -448,7 +401,6 @@ export function renderFeedbackConfig(): string {
                 <input type="range" id="tone-red-tempo" min="50" max="2000" value="${2050 - tones.redTempoMs}" />
                 <span class="tone-end-label">Rapid</span>
                 <span class="tone-val" id="tone-red-tempo-val">${tones.redTempoMs} ms</span>
-                <button class="tone-test-btn" data-zone="red">&#9654; Test</button>
               </div>
             </div>
 
@@ -469,7 +421,6 @@ export function renderFeedbackConfig(): string {
                 <input type="range" id="tone-orange-tempo" min="50" max="2000" value="${2050 - tones.orangeTempoMs}" />
                 <span class="tone-end-label">Rapid</span>
                 <span class="tone-val" id="tone-orange-tempo-val">${tones.orangeTempoMs} ms</span>
-                <button class="tone-test-btn" data-zone="orange">&#9654; Test</button>
               </div>
             </div>
 
@@ -490,7 +441,6 @@ export function renderFeedbackConfig(): string {
                 <input type="range" id="tone-yellow-tempo" min="50" max="2000" value="${2050 - tones.yellowTempoMs}" />
                 <span class="tone-end-label">Rapid</span>
                 <span class="tone-val" id="tone-yellow-tempo-val">${tones.yellowTempoMs} ms</span>
-                <button class="tone-test-btn" data-zone="yellow">&#9654; Test</button>
               </div>
             </div>
           </div>
@@ -498,16 +448,6 @@ export function renderFeedbackConfig(): string {
           <div class="subsection">
             <h3 class="subsection-title">Brightness - <span id="brightness-value">${brightness}%</span></h3>
             <input type="range" id="brightness-slider" min="0" max="100" value="${brightness}" />
-          </div>
-
-          <div class="subsection">
-            <div class="preview-header">
-              <h3 class="subsection-title">Live Preview</h3>
-              <button class="display-btn" id="display-toggle">Display</button>
-            </div>
-            <div class="preview-container" id="preview-container">
-              <div id="advanced-preview">${previewSVG}</div>
-            </div>
           </div>
 
         </div>
@@ -522,9 +462,7 @@ function initSectorToggles(): void {
       const current = state.advanced.activeSectors[sector] ?? false;
       state.advanced.activeSectors[sector] = !current;
       btn.classList.toggle('active', !current);
-      refreshPreview();
       sendConfig();
-      if (previewActive) sendPreview(true);
     });
   });
 }
@@ -572,6 +510,7 @@ export function initFeedbackConfig(): void {
       document.querySelectorAll('.mode-card[data-audio-mode]').forEach(c => c.classList.remove('selected'));
       card.classList.add('selected');
       updateTonalSettingsVisibility();
+      sendConfig();
     });
   });
 
@@ -596,17 +535,6 @@ export function initFeedbackConfig(): void {
     });
   }
 
-  // Tone test buttons — play chirp in browser via Web Audio API
-  document.querySelectorAll<HTMLButtonElement>('.tone-test-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const zone = btn.dataset['zone'] as 'red' | 'orange' | 'yellow';
-      const pitchMap = { red: 'redPitchHz', orange: 'orangePitchHz', yellow: 'yellowPitchHz' } as const;
-      playTestChirp(state.advanced.tones[pitchMap[zone]]);
-    });
-  });
-
-  previewActive = false;
-
   if (configStatusHandler) offMessage(configStatusHandler);
   configStatusHandler = (raw: unknown) => {
     const msg = raw as Record<string, unknown>;
@@ -615,18 +543,6 @@ export function initFeedbackConfig(): void {
   };
   onMessage(configStatusHandler);
   sendMessage({ type: 'getConfig' });
-
-  const displayBtn = document.getElementById('display-toggle') as HTMLButtonElement | null;
-  displayBtn?.addEventListener('click', () => {
-    previewActive = !previewActive;
-    displayBtn.classList.toggle('active', previewActive);
-    if (previewActive) {
-      sendPreview(true);
-    } else {
-      sendPreview(false);
-      sendConfig();
-    }
-  });
 
   const advancedToggle = document.getElementById('advanced-toggle');
   const advancedBody = document.getElementById('advanced-body');
@@ -707,9 +623,7 @@ export function initFeedbackConfig(): void {
       if (container) container.innerHTML = renderSectorToggles();
       initSectorToggles();
 
-      refreshPreview();
       sendConfig();
-      if (previewActive) sendPreview(true);
     });
   });
 
@@ -720,8 +634,14 @@ export function initFeedbackConfig(): void {
   brightnessSlider?.addEventListener('input', () => {
     state.advanced.brightness = Number(brightnessSlider.value);
     if (brightnessValue) brightnessValue.textContent = `${state.advanced.brightness}%`;
-    refreshPreview();
     sendConfig();
-    if (previewActive) sendPreview(true);
+  });
+
+  const obsVolSlider = document.getElementById('obstacle-volume-slider') as HTMLInputElement | null;
+  const obsVolValue = document.getElementById('obstacle-volume-value');
+  obsVolSlider?.addEventListener('input', () => {
+    state.obstacleVolume = Math.round(Number(obsVolSlider.value) * 2.55);
+    if (obsVolValue) obsVolValue.textContent = `${obsVolSlider.value}%`;
+    sendConfig();
   });
 }
