@@ -25,10 +25,6 @@ export function renderHeader(currentRoute: string): string {
           </div>
         </div>
         <div class="status-indicators">
-          <div class="battery-indicator">
-            <div class="battery-icon"><div class="battery-fill"></div></div>
-            <span>80%</span>
-          </div>
           <div class="ws-status">
             <div class="ws-dot" id="ws-dot"></div>
             <span>Live</span>
@@ -36,26 +32,43 @@ export function renderHeader(currentRoute: string): string {
         </div>
       </header>
 
-      <div class="component-status-bar">
-        <div class="component-status-chip state-unknown" id="comp-main">
-          <span class="component-dot"></span>
-          <span class="component-name">Main</span>
-          <span class="component-value">--</span>
-        </div>
-        <div class="component-status-chip state-unknown" id="comp-led">
-          <span class="component-dot"></span>
-          <span class="component-name">LED</span>
-          <span class="component-value">--</span>
-        </div>
-        <div class="component-status-chip state-unknown" id="comp-left-pod">
-          <span class="component-dot"></span>
-          <span class="component-name">Left Pod</span>
-          <span class="component-value">--</span>
-        </div>
-        <div class="component-status-chip state-unknown" id="comp-right-pod">
-          <span class="component-dot"></span>
-          <span class="component-name">Right Pod</span>
-          <span class="component-value">--</span>
+      <div class="connections-bar">
+        <button class="connections-toggle" id="connections-toggle" aria-expanded="false">
+          <span class="connections-label">Connections</span>
+          <span class="connections-chevron" id="connections-chevron">&#9660;</span>
+        </button>
+        <div class="connections-panel" id="connections-panel" aria-hidden="true">
+          <div class="conn-section-label">Controllers</div>
+          <div class="connections-row">
+            <div class="component-status-chip state-unknown" id="comp-main">
+              <span class="component-dot"></span>
+              <span class="component-name">Main</span>
+              <span class="component-value">--</span>
+            </div>
+            <div class="component-status-chip state-unknown" id="comp-led">
+              <span class="component-dot"></span>
+              <span class="component-name">LED</span>
+              <span class="component-value">--</span>
+            </div>
+          </div>
+          <div class="conn-section-label">Sensor Pods</div>
+          <div class="connections-row">
+            <div class="component-status-chip state-unknown" id="comp-left-pod">
+              <span class="component-dot"></span>
+              <span class="component-name">Left Pod</span>
+              <span class="component-value">--</span>
+            </div>
+            <div class="component-status-chip state-unknown" id="comp-right-pod">
+              <span class="component-dot"></span>
+              <span class="component-name">Right Pod</span>
+              <span class="component-value">--</span>
+            </div>
+            <div class="component-status-chip state-unknown" id="comp-tower-pod">
+              <span class="component-dot"></span>
+              <span class="component-name">Tower Pod</span>
+              <span class="component-value">--</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>`;
@@ -91,5 +104,15 @@ export function initHeader(): void {
 
   nav.querySelectorAll('.nav-item').forEach(link => {
     link.addEventListener('click', closeNav);
+  });
+
+  const connToggle  = document.getElementById('connections-toggle') as HTMLButtonElement | null;
+  const connPanel   = document.getElementById('connections-panel') as HTMLElement | null;
+  const connChevron = document.getElementById('connections-chevron') as HTMLElement | null;
+  connToggle?.addEventListener('click', () => {
+    const isOpen = connPanel?.classList.toggle('open');
+    connToggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+    connPanel?.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
+    if (connChevron) connChevron.style.transform = isOpen ? 'rotate(180deg)' : '';
   });
 }

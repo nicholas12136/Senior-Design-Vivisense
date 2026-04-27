@@ -10,8 +10,10 @@ interface StatusMessage {
   ledControllerConnected?: boolean;
   leftPodState?: string;
   rightPodState?: string;
+  towerPodState?: string;
   leftPodOnlineSensors?: number;
   rightPodOnlineSensors?: number;
+  towerPodOnlineSensors?: number;
 }
 
 const WS_PATH = '/ws';
@@ -51,36 +53,26 @@ function updateComponentStatusUI(status: StatusMessage | null): void {
     setComponentChip('comp-led', 'unknown', '--');
     setComponentChip('comp-left-pod', 'unknown', '--');
     setComponentChip('comp-right-pod', 'unknown', '--');
+    setComponentChip('comp-tower-pod', 'unknown', '--');
     return;
   }
 
   const mainConnected = status.mainControllerConnected === true;
   const ledConnected = status.ledControllerConnected === true;
 
-  const leftCount = Number.isFinite(status.leftPodOnlineSensors)
-    ? Number(status.leftPodOnlineSensors)
-    : null;
-  const rightCount = Number.isFinite(status.rightPodOnlineSensors)
-    ? Number(status.rightPodOnlineSensors)
-    : null;
+  const leftCount  = Number.isFinite(status.leftPodOnlineSensors)  ? Number(status.leftPodOnlineSensors)  : null;
+  const rightCount = Number.isFinite(status.rightPodOnlineSensors) ? Number(status.rightPodOnlineSensors) : null;
+  const towerCount = Number.isFinite(status.towerPodOnlineSensors) ? Number(status.towerPodOnlineSensors) : null;
 
-  const leftState = parseComponentState(status.leftPodState);
+  const leftState  = parseComponentState(status.leftPodState);
   const rightState = parseComponentState(status.rightPodState);
+  const towerState = parseComponentState(status.towerPodState);
 
   setComponentChip('comp-main', mainConnected ? 'online' : 'offline', mainConnected ? 'Online' : 'Offline');
-  setComponentChip('comp-led', ledConnected ? 'online' : 'offline', ledConnected ? 'Online' : 'Offline');
-
-  if (leftCount !== null) {
-    setComponentChip('comp-left-pod', leftState, `${leftCount}/4`);
-  } else {
-    setComponentChip('comp-left-pod', leftState, '--');
-  }
-
-  if (rightCount !== null) {
-    setComponentChip('comp-right-pod', rightState, `${rightCount}/4`);
-  } else {
-    setComponentChip('comp-right-pod', rightState, '--');
-  }
+  setComponentChip('comp-led',  ledConnected  ? 'online' : 'offline', ledConnected  ? 'Online' : 'Offline');
+  setComponentChip('comp-left-pod',  leftState,  leftCount  !== null ? `${leftCount}/2`  : '--');
+  setComponentChip('comp-right-pod', rightState, rightCount !== null ? `${rightCount}/2` : '--');
+  setComponentChip('comp-tower-pod', towerState, towerCount !== null ? `${towerCount}/4` : '--');
 }
 
 function asStatusMessage(value: unknown): StatusMessage | null {

@@ -138,38 +138,6 @@ button { cursor: pointer; font-family: inherit; }
   gap: 12px;
 }
 
-.battery-indicator {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  font-size: 10px;
-  gap: 3px;
-}
-.battery-icon {
-  width: 28px;
-  height: 14px;
-  border: 2px solid white;
-  border-radius: 3px;
-  padding: 2px;
-  position: relative;
-}
-.battery-icon::after {
-  content: '';
-  position: absolute;
-  right: -5px;
-  top: 4px;
-  width: 3px;
-  height: 6px;
-  background: white;
-  border-radius: 0 2px 2px 0;
-}
-.battery-fill {
-  height: 100%;
-  width: 80%;
-  background: #4ade80;
-  border-radius: 1px;
-}
-
 .ws-status {
   display: flex;
   flex-direction: column;
@@ -185,13 +153,54 @@ button { cursor: pointer; font-family: inherit; }
 }
 .ws-dot.connected { background: #4ade80; }
 
-.component-status-bar {
+/* ─── Connections dropdown ─────────────────────────────────────────────────── */
+.connections-bar {
+  background: #f5f6fb;
+  border-bottom: 1px solid #e5e7f2;
+}
+
+.connections-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: #4b5563;
+  letter-spacing: 0.03em;
+}
+
+.connections-chevron {
+  font-size: 10px;
+  color: #9ca3af;
+  transition: transform 0.2s ease;
+}
+
+.connections-panel {
+  display: none;
+  padding: 0 10px 10px;
+}
+
+.connections-panel.open { display: block; }
+
+.conn-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #9ca3af;
+  padding: 6px 2px 4px;
+}
+
+.connections-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
-  padding: 8px 10px 10px;
-  background: #f5f6fb;
-  border-bottom: 1px solid #e5e7f2;
+  margin-bottom: 4px;
 }
 
 .component-status-chip {

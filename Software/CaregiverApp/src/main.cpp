@@ -162,8 +162,8 @@ static int brightnessPercentFromRaw(int raw)
   return (int)lroundf((float)clampedRaw * (100.0f / (float)BRIGHTNESS_MAX_RAW));
 }
 
-bool audioEnabled  = true;   // play audio during obstacle detection
-bool visualEnabled = true;   // light LEDs during obstacle detection
+bool audioEnabled  = false;  // play audio during obstacle detection
+bool visualEnabled = false;  // light LEDs during obstacle detection
 uint8_t audioMode       = 0;    // 0=tonal, 1=verbal
 uint8_t obstacleVolume  = 200;  // 0-255 volume for obstacle audio
 
@@ -955,21 +955,22 @@ void sendStatus(AsyncWebSocketClient* client) {
       ((nowMs - lastLedControllerStatusMs) <= COMPONENT_TIMEOUT_MS);
 
   uint8_t sensorMask = mainControllerConnected ? latestSensorSeenMask : 0;
-  int leftPodOnlineSensors = 0;
+  // Left pod:   sensors 1-2 → bits 0-1
+  // Right pod:  sensors 3-4 → bits 2-3
+  // Tower pod:  sensors 5-8 → bits 4-7
+  int leftPodOnlineSensors  = 0;
   int rightPodOnlineSensors = 0;
-  for (int i = 0; i < 4; i++) {
-    if ((sensorMask >> i) & 0x01) leftPodOnlineSensors++;
-  }
-  for (int i = 4; i < 8; i++) {
-    if ((sensorMask >> i) & 0x01) rightPodOnlineSensors++;
-  }
+  int towerPodOnlineSensors = 0;
+  for (int i = 0; i < 2; i++) if ((sensorMask >> i) & 0x01) leftPodOnlineSensors++;
+  for (int i = 2; i < 4; i++) if ((sensorMask >> i) & 0x01) rightPodOnlineSensors++;
+  for (int i = 4; i < 8; i++) if ((sensorMask >> i) & 0x01) towerPodOnlineSensors++;
 
-  const char* leftPodState = (leftPodOnlineSensors == 4) ? "online"
-                           : (leftPodOnlineSensors == 0) ? "offline"
-                           : "degraded";
-  const char* rightPodState = (rightPodOnlineSensors == 4) ? "online"
-                            : (rightPodOnlineSensors == 0) ? "offline"
-                            : "degraded";
+  const char* leftPodState  = (leftPodOnlineSensors  == 2) ? "online"
+                            : (leftPodOnlineSensors  == 0) ? "offline" : "degraded";
+  const char* rightPodState = (rightPodOnlineSensors == 2) ? "online"
+                            : (rightPodOnlineSensors == 0) ? "offline" : "degraded";
+  const char* towerPodState = (towerPodOnlineSensors == 4) ? "online"
+                            : (towerPodOnlineSensors == 0) ? "offline" : "degraded";
 
   JsonDocument doc;
   doc["type"]           = "status";
@@ -985,8 +986,10 @@ void sendStatus(AsyncWebSocketClient* client) {
   doc["ledControllerConnected"] = ledControllerConnected;
   doc["leftPodState"] = leftPodState;
   doc["rightPodState"] = rightPodState;
+  doc["towerPodState"] = towerPodState;
   doc["leftPodOnlineSensors"] = leftPodOnlineSensors;
   doc["rightPodOnlineSensors"] = rightPodOnlineSensors;
+  doc["towerPodOnlineSensors"] = towerPodOnlineSensors;
   doc["sensorSeenMask"] = sensorMask;
   doc["mainControllerAgeMs"] =
       mainControllerConnected ? (int)(nowMs - lastMainControllerStatusMs) : -1;

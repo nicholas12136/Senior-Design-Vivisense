@@ -52,7 +52,7 @@ function buildDefaultSectors(count: SectorCount): Partial<Record<Sector, boolean
 function defaultState(): ConfigState {
   return {
     audioEnabled: false,
-    visualEnabled: true,
+    visualEnabled: false,
     selectedMode: 'sector',
     selectedAudioMode: null,
     obstacleVolume: 200,
