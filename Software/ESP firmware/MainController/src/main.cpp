@@ -70,7 +70,6 @@ struct SensorPacket
 
 const uint8_t MSG_CONFIG           = 0xB1; // CaregiverApp -> MainController
 const uint8_t MSG_COMPONENT_STATUS = 0xB4; // MainController -> CaregiverApp (broadcast)
-const uint8_t MSG_DETECTION_MODE   = 0xB5; // CaregiverApp -> MainController
 const uint8_t MSG_NAV_COMMAND      = 0xB6; // CaregiverApp -> MainController
 
 const uint8_t NAV_STOP     = 0;
@@ -89,7 +88,6 @@ struct NavigationCommandPacket
 } __attribute__((packed));   // 2 bytes
 
 const uint8_t COMPONENT_MAIN_CONTROLLER = 1;
-const uint8_t DETECTION_MODE_POLAR_GRID = 2;
 
 const uint8_t LED_RENDER_MODE_SECTOR_FILL = 0;
 const uint8_t LED_RENDER_MODE_RADAR = 1;
@@ -151,14 +149,8 @@ struct ComponentStatusPacket
   uint8_t msg_type;          // MSG_COMPONENT_STATUS
   uint8_t component_id;      // COMPONENT_MAIN_CONTROLLER
   uint8_t sensor_seen_mask;  // bit N = sensor (N+1) is currently alive
-  uint8_t flags;             // bit0=visualEnabled, bit1..2=detection mode
+  uint8_t flags;             // bit0=visualEnabled
 } __attribute__((packed));   // 4 bytes
-
-struct DetectionModePacket
-{
-  uint8_t msg_type;          // MSG_DETECTION_MODE
-  uint8_t mode;              // 2=polar (other values ignored)
-} __attribute__((packed));   // 2 bytes
 
 static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
@@ -182,7 +174,6 @@ uint8_t proximityActiveSectors  = RuntimeDefaults::kDefaultActiveSectorMask;
 float proximityRedThresholdMm = RuntimeDefaults::kDefaultRedThresholdMm;
 float proximityOrangeThresholdMm = RuntimeDefaults::kDefaultOrangeThresholdMm;
 float proximityYellowThresholdMm = RuntimeDefaults::kDefaultYellowThresholdMm;
-uint8_t proximityDetectionMode = DETECTION_MODE_POLAR_GRID;
 uint8_t proximityLedRenderMode = RuntimeDefaults::kDefaultLedRenderMode;
 
 const int POLAR_NUM_RINGS = RuntimeDefaults::kPolarNumRings;
@@ -396,8 +387,7 @@ void broadcastComponentStatus()
   ComponentStatusPacket pkt = {};
   pkt.msg_type = MSG_COMPONENT_STATUS;
   pkt.component_id = COMPONENT_MAIN_CONTROLLER;
-  pkt.flags = (proximityVisualEnabled ? 0x01 : 0x00) |
-              ((proximityDetectionMode & 0x03) << 1);
+  pkt.flags = proximityVisualEnabled ? 0x01 : 0x00;
 
   uint8_t seenMask = 0;
   for (int i = 0; i < NUM_SENSORS; i++)
@@ -447,24 +437,6 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
         Serial.printf("[Nav] Unknown action=%u\n", (unsigned int)navPkt.action);
         break;
     }
-    return;
-  }
-
-  if (msgType == MSG_DETECTION_MODE)
-  {
-    if (len < (int)sizeof(DetectionModePacket))
-    {
-      Serial.printf("[Config] Dropped short mode packet len=%d\n", len);
-      return;
-    }
-
-    DetectionModePacket modePkt;
-    memcpy(&modePkt, incomingData, sizeof(modePkt));
-    // Beta architecture is polar-only in MainController.
-    (void)modePkt.mode;
-    proximityDetectionMode = DETECTION_MODE_POLAR_GRID;
-    clearPolarGrid();
-    Serial.println("[Config] detection_mode forced to polar (2)");
     return;
   }
 
@@ -816,9 +788,7 @@ void emitDetectionDebugFrame(const float closestMmByZone[8])
     return;
   }
 
-  Serial.print("DL,");
-  Serial.print((int)proximityDetectionMode);
-  Serial.print(",");
+  Serial.print("DL,2,");
   Serial.print((int)proximityNumZones);
   Serial.print(",");
   Serial.print((int)proximityActiveSectors);
@@ -836,7 +806,6 @@ void emitDetectionDebugFrame(const float closestMmByZone[8])
   }
   Serial.println();
 
-  if (proximityDetectionMode != DETECTION_MODE_POLAR_GRID) return;
   if (!kEmitPolarGridDebugCsv) return;
   if (!serialTelemetryWritable(128)) return;
 
@@ -978,9 +947,7 @@ void emitTuningConfigLine()
   int redMm = (int)proximityRedThresholdMm;
   int orangeMm = (int)proximityOrangeThresholdMm;
   int yellowMm = (int)proximityYellowThresholdMm;
-  Serial.print("CFG,mode,");
-  Serial.print((int)proximityDetectionMode);
-  Serial.print(",zones,");
+  Serial.print("CFG,zones,");
   Serial.print((int)proximityNumZones);
   Serial.print(",bright,");
   Serial.print((int)proximityBrightness);
@@ -1057,14 +1024,7 @@ void handleSerialCommand(char *line)
   }
 
   bool updated = true;
-  if (strcmp(key, "mode") == 0)
-  {
-    // Polar only in beta architecture.
-    raw = DETECTION_MODE_POLAR_GRID;
-    proximityDetectionMode = DETECTION_MODE_POLAR_GRID;
-    clearPolarGrid();
-  }
-  else if (strcmp(key, "zones") == 0)
+  if (strcmp(key, "zones") == 0)
   {
     int zones = (int)raw;
     if (zones != 4 && zones != 6 && zones != 8) updated = false;
@@ -1521,8 +1481,7 @@ void setup()
     return;
   }
 
-  Serial.printf("[Config] detection_mode=%d (polar-only)\n",
-                (int)DETECTION_MODE_POLAR_GRID);
+  Serial.println("[Config] detection pipeline=polar-only");
   emitTuningConfigLine();
 
   esp_now_register_recv_cb(OnDataRecv);

@@ -254,15 +254,7 @@ class App:
         self.left_canvas.bind("<Configure>", _on_canvas_configure)
 
         ttk.Label(left, text="View Mode").pack(anchor="w")
-        self.display_mode_var = tk.StringVar(value="cartesian")
-        self.mode_notebook = ttk.Notebook(left)
-        self.mode_notebook.pack(anchor="w", fill=tk.X, pady=(4, 8))
-
-        self.cart_tab = ttk.Frame(self.mode_notebook)
-        self.polar_tab = ttk.Frame(self.mode_notebook)
-        self.mode_notebook.add(self.cart_tab, text="Cartesian")
-        self.mode_notebook.add(self.polar_tab, text="Polar")
-        self.mode_notebook.bind("<<NotebookTabChanged>>", self._on_mode_tab_changed)
+        ttk.Label(left, text="Polar only").pack(anchor="w", pady=(4, 8))
 
         ttk.Label(left, text="Sensor Status").pack(anchor="w")
         self.sensor_enabled_vars = {}
@@ -304,8 +296,7 @@ class App:
         ).pack(anchor="w")
 
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=8)
-        self._build_cartesian_controls(self.cart_tab)
-        self._build_polar_controls(self.polar_tab)
+        self._build_polar_controls(left)
 
         ttk.Label(left, text="Sensor Color Key").pack(anchor="w", pady=(8, 0))
         key_frame = ttk.Frame(left)
@@ -390,11 +381,6 @@ class App:
         row.pack(anchor="w")
         ttk.Label(row, text=label, width=22).pack(side=tk.LEFT)
         ttk.Entry(row, textvariable=var, width=10).pack(side=tk.LEFT)
-
-    def _on_mode_tab_changed(self, _event=None):
-        idx = self.mode_notebook.index(self.mode_notebook.select())
-        self.display_mode_var.set("cartesian" if idx == 0 else "polar")
-        self._draw()
 
     def refresh_ports(self):
         names = [p.device for p in list_ports()]
@@ -622,7 +608,7 @@ class App:
         return rows
 
     def _step_filters_if_due(self, rows):
-        cart, polar = self._ensure_grids(force_reset=False)
+        _cart, polar = self._ensure_grids(force_reset=False)
         filtered_rows = self._rows_for_filtered(rows)
         now = time.time()
         period_s = self._parse_filter_period_s()
@@ -631,7 +617,6 @@ class App:
 
         steps = 0
         while (now - self.last_filter_step_s) >= period_s and steps < 8:
-            self._step_cartesian_filter(rows, filtered_rows, cart)
             self._step_polar_filter(rows, filtered_rows, polar)
             self.last_filter_step_s += period_s
             steps += 1
@@ -952,14 +937,9 @@ class App:
         )
 
     def _draw(self):
-        cart, polar = self._ensure_grids(force_reset=False)
+        _cart, polar = self._ensure_grids(force_reset=False)
         rows = self._collect_points()
-        mode = self.display_mode_var.get().strip().lower()
-
-        if mode == "polar":
-            self._draw_polar(rows, polar)
-        else:
-            self._draw_cartesian(rows, cart)
+        self._draw_polar(rows, polar)
 
         self._update_sensor_status_labels()
         self.fig.tight_layout()
@@ -984,7 +964,7 @@ def default_port():
 
 def main():
     parser = argparse.ArgumentParser(
-        description="ViviSense occupancy filter debugger (left raw, right filtered; cartesian/polar toggle)"
+        description="ViviSense occupancy filter debugger (polar-only)"
     )
     parser.add_argument("--port", default=default_port(), help="Default serial port (e.g. COM5)")
     parser.add_argument("--baud", type=int, default=115200, help="Serial baud")

@@ -1,0 +1,103 @@
+<svg width="128" height="128" viewBox="-4 -4 128 128" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="ledglow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="1.8" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <circle cx="60.0" cy="60.0" r="60.2" fill="#0a0a14"/>
+  <circle cx="60.0" cy="60.0" r="60.2" fill="none" stroke="#22223a" stroke-width="1.5"/>
+  <circle cx="60.00" cy="112.20" r="2.2" fill="#00cc55" />
+  <circle cx="49.82" cy="111.20" r="2.2" fill="#00cc55" />
+  <circle cx="40.02" cy="108.23" r="2.2" fill="#00cc55" />
+  <circle cx="31.00" cy="103.40" r="2.2" fill="#ffdd00" />
+  <circle cx="23.09" cy="96.91" r="2.2" fill="#ffdd00" />
+  <circle cx="16.60" cy="89.00" r="2.2" fill="#ffdd00" />
+  <circle cx="11.77" cy="79.98" r="2.2" fill="#ffdd00" />
+  <circle cx="8.80" cy="70.18" r="2.2" fill="#ffdd00" />
+  <circle cx="7.80" cy="60.00" r="2.2" fill="#00cc55" />
+  <circle cx="8.80" cy="49.82" r="2.2" fill="#00cc55" />
+  <circle cx="11.77" cy="40.02" r="2.2" fill="#00cc55" />
+  <circle cx="16.60" cy="31.00" r="2.2" fill="#00cc55" />
+  <circle cx="23.09" cy="23.09" r="2.2" fill="#00cc55" />
+  <circle cx="31.00" cy="16.60" r="2.2" fill="#00cc55" />
+  <circle cx="40.02" cy="11.77" r="2.2" fill="#ff2222" />
+  <circle cx="49.82" cy="8.80" r="2.2" fill="#ff2222" />
+  <circle cx="60.00" cy="7.80" r="2.2" fill="#ff2222" />
+  <circle cx="70.18" cy="8.80" r="2.2" fill="#ff2222" />
+  <circle cx="79.98" cy="11.77" r="2.2" fill="#ff2222" />
+  <circle cx="89.00" cy="16.60" r="2.2" fill="#00cc55" />
+  <circle cx="96.91" cy="23.09" r="2.2" fill="#00cc55" />
+  <circle cx="103.40" cy="31.00" r="2.2" fill="#00cc55" />
+  <circle cx="108.23" cy="40.02" r="2.2" fill="#00cc55" />
+  <circle cx="111.20" cy="49.82" r="2.2" fill="#00cc55" />
+  <circle cx="112.20" cy="60.00" r="2.2" fill="#ff8800" />
+  <circle cx="111.20" cy="70.18" r="2.2" fill="#ff8800" />
+  <circle cx="108.23" cy="79.98" r="2.2" fill="#ff8800" />
+  <circle cx="103.40" cy="89.00" r="2.2" fill="#ff8800" />
+  <circle cx="96.91" cy="96.91" r="2.2" fill="#ff8800" />
+  <circle cx="89.00" cy="103.40" r="2.2" fill="#ff8800" />
+  <circle cx="79.98" cy="108.23" r="2.2" fill="#00cc55" />
+  <circle cx="70.18" cy="111.20" r="2.2" fill="#00cc55" />
+  <circle cx="60.00" cy="100.98" r="2.2" fill="#00cc55" />
+  <circle cx="49.39" cy="99.58" r="2.2" fill="#00cc55" />
+  <circle cx="39.51" cy="95.49" r="2.2" fill="#ffdd00" />
+  <circle cx="31.02" cy="88.98" r="2.2" fill="#ffdd00" />
+  <circle cx="24.51" cy="80.49" r="2.2" fill="#ffdd00" />
+  <circle cx="20.42" cy="70.61" r="2.2" fill="#ffdd00" />
+  <circle cx="19.02" cy="60.00" r="2.2" fill="#00cc55" />
+  <circle cx="20.42" cy="49.39" r="2.2" fill="#00cc55" />
+  <circle cx="24.51" cy="39.51" r="2.2" fill="#00cc55" />
+  <circle cx="31.02" cy="31.02" r="2.2" fill="#00cc55" />
+  <circle cx="39.51" cy="24.51" r="2.2" fill="#ff2222" />
+  <circle cx="49.39" cy="20.42" r="2.2" fill="#ff2222" />
+  <circle cx="60.00" cy="19.02" r="2.2" fill="#ff2222" />
+  <circle cx="70.61" cy="20.42" r="2.2" fill="#ff2222" />
+  <circle cx="80.49" cy="24.51" r="2.2" fill="#00cc55" />
+  <circle cx="88.98" cy="31.02" r="2.2" fill="#00cc55" />
+  <circle cx="95.49" cy="39.51" r="2.2" fill="#00cc55" />
+  <circle cx="99.58" cy="49.39" r="2.2" fill="#00cc55" />
+  <circle cx="100.98" cy="60.00" r="2.2" fill="#ff8800" />
+  <circle cx="99.58" cy="70.61" r="2.2" fill="#ff8800" />
+  <circle cx="95.49" cy="80.49" r="2.2" fill="#ff8800" />
+  <circle cx="88.98" cy="88.98" r="2.2" fill="#ff8800" />
+  <circle cx="80.49" cy="95.49" r="2.2" fill="#00cc55" />
+  <circle cx="70.61" cy="99.58" r="2.2" fill="#00cc55" />
+  <circle cx="60.00" cy="89.75" r="2.2" fill="#00cc55" />
+  <circle cx="48.61" cy="87.49" r="2.2" fill="#00cc55" />
+  <circle cx="38.96" cy="81.04" r="2.2" fill="#ffdd00" />
+  <circle cx="32.51" cy="71.39" r="2.2" fill="#ffdd00" />
+  <circle cx="30.25" cy="60.00" r="2.2" fill="#00cc55" />
+  <circle cx="32.51" cy="48.61" r="2.2" fill="#00cc55" />
+  <circle cx="38.96" cy="38.96" r="2.2" fill="#00cc55" />
+  <circle cx="48.61" cy="32.51" r="2.2" fill="#ff2222" />
+  <circle cx="60.00" cy="30.25" r="2.2" fill="#ff2222" />
+  <circle cx="71.39" cy="32.51" r="2.2" fill="#ff2222" />
+  <circle cx="81.04" cy="38.96" r="2.2" fill="#00cc55" />
+  <circle cx="87.49" cy="48.61" r="2.2" fill="#00cc55" />
+  <circle cx="89.75" cy="60.00" r="2.2" fill="#ff8800" />
+  <circle cx="87.49" cy="71.39" r="2.2" fill="#ff8800" />
+  <circle cx="81.04" cy="81.04" r="2.2" fill="#ff8800" />
+  <circle cx="71.39" cy="87.49" r="2.2" fill="#00cc55" />
+  <circle cx="60.00" cy="78.53" r="2.2" fill="#00cc55" />
+  <circle cx="50.73" cy="76.05" r="2.2" fill="#ffdd00" />
+  <circle cx="43.95" cy="69.27" r="2.2" fill="#ffdd00" />
+  <circle cx="41.47" cy="60.00" r="2.2" fill="#00cc55" />
+  <circle cx="43.95" cy="50.73" r="2.2" fill="#00cc55" />
+  <circle cx="50.73" cy="43.95" r="2.2" fill="#ff2222" />
+  <circle cx="60.00" cy="41.47" r="2.2" fill="#ff2222" />
+  <circle cx="69.27" cy="43.95" r="2.2" fill="#00cc55" />
+  <circle cx="76.05" cy="50.73" r="2.2" fill="#00cc55" />
+  <circle cx="78.53" cy="60.00" r="2.2" fill="#ff8800" />
+  <circle cx="76.05" cy="69.27" r="2.2" fill="#ff8800" />
+  <circle cx="69.27" cy="76.05" r="2.2" fill="#00cc55" />
+  <circle cx="60.00" cy="67.31" r="2.2" fill="#00cc55" />
+  <circle cx="54.83" cy="65.17" r="2.2" fill="#ffdd00" />
+  <circle cx="52.69" cy="60.00" r="2.2" fill="#00cc55" />
+  <circle cx="54.83" cy="54.83" r="2.2" fill="#00cc55" />
+  <circle cx="60.00" cy="52.69" r="2.2" fill="#ff2222" />
+  <circle cx="65.17" cy="54.83" r="2.2" fill="#00cc55" />
+  <circle cx="67.31" cy="60.00" r="2.2" fill="#ff8800" />
+  <circle cx="65.17" cy="65.17" r="2.2" fill="#ff8800" />
+  <circle cx="60.00" cy="60.00" r="2.2" fill="#0066ff" />
+</svg>

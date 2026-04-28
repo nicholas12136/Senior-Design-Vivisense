@@ -177,10 +177,6 @@ class App:
 
     @staticmethod
     def _mode_name(mode: int) -> str:
-        if mode == 0:
-            return "direct"
-        if mode == 1:
-            return "cartesian"
         return "polar"
 
     def _distance_to_ring_and_color(self, dist_mm: int) -> tuple[int, str]:

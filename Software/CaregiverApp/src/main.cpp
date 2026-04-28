@@ -58,11 +58,9 @@ static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 // ── Beta: inter-ESP32 packet types ────────────────────────────────────────────
 const uint8_t MSG_CONFIG           = 0xB1;
 const uint8_t MSG_COMPONENT_STATUS = 0xB4;
-const uint8_t MSG_DETECTION_MODE   = 0xB5;
 
 const uint8_t COMPONENT_MAIN_CONTROLLER = 1;
 const uint8_t COMPONENT_LED_CONTROLLER  = 2;
-const uint8_t DETECTION_MODE_POLAR_GRID = 2;
 const uint8_t LED_RENDER_MODE_SECTOR_FILL = 0;
 const uint8_t LED_RENDER_MODE_RADAR = 1;
 const bool ENABLE_NAV_AUDIO_PLAYBACK = false;
@@ -93,13 +91,8 @@ struct __attribute__((packed)) ComponentStatusPacket {
   uint8_t msg_type;
   uint8_t component_id;
   uint8_t sensor_seen_mask;
-  uint8_t flags; // bit0=visualEnabled, bit1..2=detection mode (main controller)
+  uint8_t flags; // bit0=visualEnabled
 };                        // 4 bytes
-
-struct __attribute__((packed)) DetectionModePacket {
-  uint8_t msg_type;
-  uint8_t mode; // 2=polar
-};                        // 2 bytes
 
 const uint8_t MSG_NAV_COMMAND  = 0xB6;
 
@@ -141,9 +134,7 @@ float previewYellowMm       = 1500.0f;
 bool  previewActiveSectors[8]  = {true,true,true,true,true,true,false,false};
 bool  currentActiveSectors[8] = {true,true,true,true,true,true,true,true};
 uint8_t latestSensorSeenMask = 0;
-uint8_t currentDetectionMode = DETECTION_MODE_POLAR_GRID;
 uint8_t currentRenderMode = LED_RENDER_MODE_SECTOR_FILL;
-uint8_t lastMainDetectionMode = DETECTION_MODE_POLAR_GRID;
 uint32_t lastMainControllerStatusMs = 0;
 uint32_t lastLedControllerStatusMs = 0;
 uint32_t lastWsStatusBroadcastMs = 0;
@@ -313,10 +304,6 @@ void onEspNowReceived(const uint8_t *mac, const uint8_t *data, int len)
       if (pkt->component_id == COMPONENT_MAIN_CONTROLLER)
       {
         latestSensorSeenMask = pkt->sensor_seen_mask;
-        uint8_t modeFromMain = (uint8_t)((pkt->flags >> 1) & 0x03);
-        if (modeFromMain <= DETECTION_MODE_POLAR_GRID) {
-          lastMainDetectionMode = modeFromMain;
-        }
         lastMainControllerStatusMs = millis();
       }
       else if (pkt->component_id == COMPONENT_LED_CONTROLLER)
@@ -359,16 +346,6 @@ void sendConfigToMainController(int overrideVisualEnabled = -1)
   cfg.obstacle_volume     = obstacleVolume;
   esp_err_t err = esp_now_send(MAIN_CONTROLLER_MAC, (const uint8_t *)&cfg, sizeof(cfg));
   if (err != ESP_OK) Serial.printf("[ESP-NOW] Config send error: 0x%x\n", err);
-}
-
-void sendDetectionModeToMainController()
-{
-  DetectionModePacket pkt = {};
-  pkt.msg_type = MSG_DETECTION_MODE;
-  pkt.mode = DETECTION_MODE_POLAR_GRID;
-  currentDetectionMode = DETECTION_MODE_POLAR_GRID;
-  esp_err_t err = esp_now_send(MAIN_CONTROLLER_MAC, reinterpret_cast<const uint8_t*>(&pkt), sizeof(pkt));
-  if (err != ESP_OK) Serial.printf("[ESP-NOW] Detection mode send error: 0x%x\n", err);
 }
 
 static uint8_t ringToColorCode(int ring) {
@@ -1086,7 +1063,6 @@ void setup() {
 
   // Sync default settings to MainController on boot
   sendConfigToMainController();
-  sendDetectionModeToMainController();
   Serial.println("[Config] Initial settings sent to MainController");
 }
 

@@ -14,7 +14,7 @@ It:
 
 1. Receives ESP-NOW sensor packets from multiple pods.
 2. Converts raw range cells to world-frame XYZ points.
-3. Computes obstacle proximity by zone (direct / cartesian grid / polar grid).
+3. Computes obstacle proximity by zone using a polar occupancy grid.
 4. Broadcasts zone distances to LEDRingController.
 5. Broadcasts health/status to CaregiverApp.
 6. Streams serial telemetry for desktop viewers/debug tools.
@@ -31,7 +31,7 @@ main loop
        -> emit P/E serial lines
     -> emitReceiverStatusIfDue()   (S lines + component status)
     -> broadcastZoneProximity()    (~15 Hz, configurable)
-       -> direct OR cartesian OR polar path
+       -> polar path
        -> ZoneProximityPacket broadcast
 ```
 
@@ -40,7 +40,7 @@ main loop
 - `src/main.cpp`
   - packet handling
   - state machines
-  - occupancy/polar filtering
+  - polar occupancy filtering
   - zone distance computation
   - ESP-NOW output + serial command interface
 - `include/SensorAndPoint.h`
@@ -84,9 +84,6 @@ Point conversion cache:
 
 Filter state:
 
-- Cartesian:
-  - `occConfidence[]`
-  - `occOccupied[]`
 - Polar:
   - `polarConfidence[]`
   - `polarOccupied[]`
@@ -125,13 +122,10 @@ This keeps callback work minimal and does heavy processing in loop context.
 
 `OnDataRecv(...)` handles three packet categories:
 
-1. `DetectionModePacket` (`MSG_DETECTION_MODE`)
-   - updates mode
-   - clears occupancy + polar filter state
-2. `ConfigPacket` (`MSG_CONFIG`)
+1. `ConfigPacket` (`MSG_CONFIG`)
    - updates zones/brightness/visual/active sectors and thresholds
    - clears filters if visual disabled
-3. `SensorPacket`
+2. `SensorPacket`
    - writes raw distances/status/targets into sensor object
    - updates sensor health counters/timestamps
    - sets `sensorPendingProcess[idx] = 1`
@@ -194,28 +188,11 @@ Note: conversion-latency fields were intentionally removed from `S` to keep runt
 
 This prevents old points from contributing after link loss.
 
-## 12. Proximity computation modes
+## 12. Proximity computation
 
-Main mode switch happens in `broadcastZoneProximity()`.
+Main proximity computation happens in `updateAndBroadcastLedFrame()`.
 
-### Mode 0: Direct
-
-- iterate valid latest points directly
-- assign point to zone
-- keep minimum planar distance per zone
-
-### Mode 1: Cartesian grid
-
-1. `accumulateGridHits(...)`:
-   - map valid points to occupancy cell index
-2. `updateOccupancyGrid(...)`:
-   - confidence rise/decay
-   - hysteresis enter/exit thresholds
-3. `computeZoneProximityFromGrid(...)`:
-   - scan occupied cells, map each to zone
-   - keep nearest distance per zone
-
-### Mode 2: Polar grid
+### Polar grid
 
 1. `accumulatePolarHits(...)`:
    - map valid points to `(ring, zone)` bin
@@ -284,7 +261,6 @@ Commands:
 Main keys:
 
 - mode and zones:
-  - `mode`
   - `zones`
   - `sectors_mask`
 - visualization:
@@ -297,11 +273,6 @@ Main keys:
   - `status_ms`
   - `proximity_ms`
   - `led_mode` (`0=sector-fill`, `1=radar`)
-- cart filter:
-  - `occ_rise`
-  - `occ_decay`
-  - `occ_enter`
-  - `occ_exit`
 - polar filter:
   - `polar_rise`
   - `polar_decay`
@@ -331,7 +302,7 @@ This design avoids heavy compute inside ESP-NOW callback and keeps timing predic
 3. Verify `P/E` lines are present and points are valid where expected.
 4. Change one tuning value with `SET,...`.
 5. Confirm `ACK` and updated `CFG`.
-6. Observe `DL/DP/DO` changes (especially in polar mode).
+6. Observe `DL/DP/DO` changes.
 7. Confirm LED behavior matches computed zone distances.
 
 ## 19. Common extension points
