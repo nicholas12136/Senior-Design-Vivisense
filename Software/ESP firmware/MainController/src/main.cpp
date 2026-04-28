@@ -177,6 +177,8 @@ uint8_t proximityActiveSectors  = RuntimeDefaults::kDefaultActiveSectorMask;
 float proximityRedThresholdMm = RuntimeDefaults::kDefaultRedThresholdMm;
 float proximityOrangeThresholdMm = RuntimeDefaults::kDefaultOrangeThresholdMm;
 float proximityYellowThresholdMm = RuntimeDefaults::kDefaultYellowThresholdMm;
+float proximityFloorZMm = RuntimeDefaults::kDefaultObstacleFloorZMm;
+float proximityCeilingZMm = RuntimeDefaults::kDefaultObstacleCeilingZMm;
 uint8_t proximityLedRenderMode = RuntimeDefaults::kDefaultLedRenderMode;
 
 const int POLAR_NUM_RINGS = RuntimeDefaults::kPolarNumRings;
@@ -243,6 +245,7 @@ static float ledAngleDegForIndex(int ringIdx, int idxInRing);
 static int ledIndexFromAngleDeg(int ringIdx, float angleDeg);
 static void setLedByRingAngle(LedFrame_t &frame, int ringIdx, float angleDeg, uint8_t color);
 static void packPolarOwnerNibbles(uint8_t packed[PRESENTATION_OWNER_PACKED_BYTES]);
+static bool pointPassesOccupancyHeightWindow(const Point &p);
 void buildSectorFrame(const float closestMmByZone[8], LedFrame_t &frame);
 void buildRadarFrame(LedFrame_t &frame);
 void buildLedFrame(const float closestMmByZone[8], LedFrame_t &frame);
@@ -615,6 +618,7 @@ void accumulatePolarHits(uint8_t hitMask[POLAR_BIN_COUNT], uint8_t hitOwner[POLA
     {
       const Point &p = sensors[s].latestWorldPoints[cell];
       if (!p.isValid) continue;
+      if (!pointPassesOccupancyHeightWindow(p)) continue;
 
       float dist = sqrtf(p.worldX * p.worldX + p.worldY * p.worldY);
       if (dist > RuntimeDefaults::kMaxObstacleRangeMm) continue;
@@ -635,6 +639,11 @@ void accumulatePolarHits(uint8_t hitMask[POLAR_BIN_COUNT], uint8_t hitOwner[POLA
       }
     }
   }
+}
+
+static bool pointPassesOccupancyHeightWindow(const Point &p)
+{
+  return p.worldZ >= proximityFloorZMm && p.worldZ <= proximityCeilingZMm;
 }
 
 void updatePolarGrid(const uint8_t hitMask[POLAR_BIN_COUNT], const uint8_t hitOwner[POLAR_BIN_COUNT])
@@ -1036,6 +1045,10 @@ void emitTuningConfigLine()
   Serial.print(orangeMm);
   Serial.print(",yellow_mm,");
   Serial.print(yellowMm);
+  Serial.print(",floor_z_mm,");
+  Serial.print((int)proximityFloorZMm);
+  Serial.print(",ceiling_z_mm,");
+  Serial.print((int)proximityCeilingZMm);
   Serial.print(",stale_ms,");
   Serial.print((int)sensorStaleTimeoutMs);
   Serial.print(",status_ms,");
@@ -1076,7 +1089,7 @@ void handleSerialCommand(char *line)
 
   if (strcmp(line, "HELP") == 0)
   {
-    Serial.println("HELP,GET|SET,<key>,<value> (debug keys: dbg_sensor_csv, dbg_detection_csv, present_grid)");
+    Serial.println("HELP,GET|SET,<key>,<value> (debug keys: dbg_sensor_csv, dbg_detection_csv, present_grid; occupancy keys: floor_z_mm, ceiling_z_mm)");
     return;
   }
 
@@ -1151,6 +1164,20 @@ void handleSerialCommand(char *line)
     if (yellowMm <= orangeMm) yellowMm = orangeMm + 10;
     yellowMm = clampInt(yellowMm, 70, 3000);
     applyProximityThresholds((float)redMm, (float)orangeMm, (float)yellowMm);
+  }
+  else if (strcmp(key, "floor_z_mm") == 0)
+  {
+    int floorMm = clampInt((int)raw, -2000, 4000);
+    int ceilingMm = (int)proximityCeilingZMm;
+    if (floorMm >= ceilingMm) floorMm = ceilingMm - 10;
+    proximityFloorZMm = (float)floorMm;
+  }
+  else if (strcmp(key, "ceiling_z_mm") == 0)
+  {
+    int floorMm = (int)proximityFloorZMm;
+    int ceilingMm = clampInt((int)raw, -1990, 5000);
+    if (ceilingMm <= floorMm) ceilingMm = floorMm + 10;
+    proximityCeilingZMm = (float)ceilingMm;
   }
   else if (strcmp(key, "stale_ms") == 0)
   {

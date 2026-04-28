@@ -40,4 +40,10 @@ static constexpr uint8_t kPolarExitThreshold = 70;
 // Max detection range used for pruning invalid/far points.
 static constexpr float kMaxObstacleRangeMm = 3000.0f;
 
+// Vertical occupancy window in world Z (mm).
+// Points below the floor cutoff or above the ceiling cutoff do not count
+// toward the polar occupancy grid.
+static constexpr float kDefaultObstacleFloorZMm = 50.0f;
+static constexpr float kDefaultObstacleCeilingZMm = 5000.0f;
+
 }  // namespace RuntimeDefaults
