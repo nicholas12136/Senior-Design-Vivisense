@@ -71,6 +71,7 @@ struct SensorPacket
 const uint8_t MSG_CONFIG           = 0xB1; // CaregiverApp -> MainController
 const uint8_t MSG_COMPONENT_STATUS = 0xB4; // MainController -> CaregiverApp (broadcast)
 const uint8_t MSG_NAV_COMMAND      = 0xB6; // CaregiverApp -> MainController
+const uint8_t MSG_PRESENTATION_POLAR_GRID = 0xB7; // MainController -> presentation receiver (broadcast)
 
 const uint8_t NAV_STOP     = 0;
 const uint8_t NAV_FORWARD  = 1;
@@ -153,6 +154,8 @@ struct ComponentStatusPacket
 } __attribute__((packed));   // 4 bytes
 
 static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+// Update this MAC to match the laptop-side PresentationGridReceiver ESP32.
+static uint8_t PRESENTATION_RECEIVER_MAC[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
 Sensor sensors[NUM_SENSORS];
 uint8_t sensorSeen[NUM_SENSORS] = {0};
@@ -179,16 +182,34 @@ uint8_t proximityLedRenderMode = RuntimeDefaults::kDefaultLedRenderMode;
 const int POLAR_NUM_RINGS = RuntimeDefaults::kPolarNumRings;
 const int POLAR_MAX_ZONES = RuntimeDefaults::kPolarMaxZones;
 const int POLAR_BIN_COUNT = POLAR_NUM_RINGS * POLAR_MAX_ZONES;
+static constexpr int PRESENTATION_OWNER_PACKED_BYTES = (POLAR_BIN_COUNT + 1) / 2;
+
+struct PresentationPolarGridPacket
+{
+  uint8_t  msg_type;    // MSG_PRESENTATION_POLAR_GRID
+  uint8_t  ring_count;  // polar ring count
+  uint8_t  zone_count;  // polar zone count
+  uint8_t  reserved;
+  uint16_t frame_seq;
+  uint32_t source_ms;
+  uint8_t  packed_owner[PRESENTATION_OWNER_PACKED_BYTES];
+} __attribute__((packed));
 uint8_t polarConfRise = RuntimeDefaults::kPolarConfRise;
 uint8_t polarConfDecay = RuntimeDefaults::kPolarConfDecay;
 uint8_t polarEnterThreshold = RuntimeDefaults::kPolarEnterThreshold;
 uint8_t polarExitThreshold = RuntimeDefaults::kPolarExitThreshold;
 uint8_t polarConfidence[POLAR_BIN_COUNT] = {0};
 uint8_t polarOccupied[POLAR_BIN_COUNT] = {0};
+uint8_t polarOwner[POLAR_BIN_COUNT] = {0};
+bool    presentationGridEnabled = true;
+uint16_t presentationGridFrameSeq = 0;
+uint32_t lastPresentationGridBroadcastMs = 0;
+static constexpr uint32_t kPresentationGridPeriodMs = 100;
 
 uint32_t lastProximityBroadcastMs = 0;
 uint32_t proximityPeriodMs = RuntimeDefaults::kProximityPeriodMs;
 uint8_t  broadcastPeerAdded = 0;
+uint8_t  presentationPeerAdded = 0;
 char serialCmdBuffer[200] = {0};
 uint16_t serialCmdLen = 0;
 bool debugSensorCsvEnabled = true;     // P/E/S lines
@@ -206,13 +227,14 @@ void updateAndBroadcastLedFrame();
 void sendClearLedFrame();
 void invalidateStaleSensors();
 void clearPolarGrid();
-void accumulatePolarHits(uint8_t hitMask[POLAR_BIN_COUNT]);
-void updatePolarGrid(const uint8_t hitMask[POLAR_BIN_COUNT]);
+void accumulatePolarHits(uint8_t hitMask[POLAR_BIN_COUNT], uint8_t hitOwner[POLAR_BIN_COUNT]);
+void updatePolarGrid(const uint8_t hitMask[POLAR_BIN_COUNT], const uint8_t hitOwner[POLAR_BIN_COUNT]);
 void computeZoneProximityFromPolar(float closestMmByZone[8]);
 int polarRingIndexFromDistance(float distMm);
 float polarRepresentativeDistanceForRing(int ringIndex);
 void emitDetectionDebugFrame(const float closestMmByZone[8]);
 void serviceProximityAudio();
+void broadcastPresentationPolarGrid(uint32_t sourceMs);
 static int proximityZoneIndex(float angleDeg, int numZones);
 static int clampInt(int v, int lo, int hi);
 static uint8_t colorForDistanceMm(float distMm);
@@ -220,6 +242,7 @@ static int displayRingIndexFromDistance(float distMm);
 static float ledAngleDegForIndex(int ringIdx, int idxInRing);
 static int ledIndexFromAngleDeg(int ringIdx, float angleDeg);
 static void setLedByRingAngle(LedFrame_t &frame, int ringIdx, float angleDeg, uint8_t color);
+static void packPolarOwnerNibbles(uint8_t packed[PRESENTATION_OWNER_PACKED_BYTES]);
 void buildSectorFrame(const float closestMmByZone[8], LedFrame_t &frame);
 void buildRadarFrame(LedFrame_t &frame);
 void buildLedFrame(const float closestMmByZone[8], LedFrame_t &frame);
@@ -544,6 +567,7 @@ void clearPolarGrid()
   {
     polarConfidence[i] = 0;
     polarOccupied[i] = 0;
+    polarOwner[i] = 0;
   }
 }
 
@@ -574,9 +598,15 @@ float polarRepresentativeDistanceForRing(int ringIndex)
   return lower + ((upper - lower) * 0.5f);
 }
 
-void accumulatePolarHits(uint8_t hitMask[POLAR_BIN_COUNT])
+void accumulatePolarHits(uint8_t hitMask[POLAR_BIN_COUNT], uint8_t hitOwner[POLAR_BIN_COUNT])
 {
-  for (int i = 0; i < POLAR_BIN_COUNT; i++) hitMask[i] = 0;
+  float nearestMm[POLAR_BIN_COUNT];
+  for (int i = 0; i < POLAR_BIN_COUNT; i++)
+  {
+    hitMask[i] = 0;
+    hitOwner[i] = 0;
+    nearestMm[i] = NO_OBSTACLE_MM;
+  }
 
   for (int s = 0; s < NUM_SENSORS; s++)
   {
@@ -595,12 +625,19 @@ void accumulatePolarHits(uint8_t hitMask[POLAR_BIN_COUNT])
 
       int ring = polarRingIndexFromDistance(dist);
       int idx = polarBinIndex(ring, zone);
-      if (idx >= 0 && idx < POLAR_BIN_COUNT) hitMask[idx] = 1;
+      if (idx < 0 || idx >= POLAR_BIN_COUNT) continue;
+
+      if (!hitMask[idx] || dist < nearestMm[idx])
+      {
+        hitMask[idx] = 1;
+        hitOwner[idx] = (uint8_t)p.sensorId;
+        nearestMm[idx] = dist;
+      }
     }
   }
 }
 
-void updatePolarGrid(const uint8_t hitMask[POLAR_BIN_COUNT])
+void updatePolarGrid(const uint8_t hitMask[POLAR_BIN_COUNT], const uint8_t hitOwner[POLAR_BIN_COUNT])
 {
   for (int i = 0; i < POLAR_BIN_COUNT; i++)
   {
@@ -615,9 +652,14 @@ void updatePolarGrid(const uint8_t hitMask[POLAR_BIN_COUNT])
       conf = (conf > polarConfDecay) ? (uint8_t)(conf - polarConfDecay) : 0;
     }
     polarConfidence[i] = conf;
+    if (hitMask[i] && hitOwner[i] != 0) polarOwner[i] = hitOwner[i];
 
     if (!polarOccupied[i] && conf >= polarEnterThreshold) polarOccupied[i] = 1;
-    else if (polarOccupied[i] && conf <= polarExitThreshold) polarOccupied[i] = 0;
+    else if (polarOccupied[i] && conf <= polarExitThreshold)
+    {
+      polarOccupied[i] = 0;
+      polarOwner[i] = 0;
+    }
   }
 }
 
@@ -836,15 +878,48 @@ void emitDetectionDebugFrame(const float closestMmByZone[8])
   Serial.println();
 }
 
+static void packPolarOwnerNibbles(uint8_t packed[PRESENTATION_OWNER_PACKED_BYTES])
+{
+  for (int i = 0; i < PRESENTATION_OWNER_PACKED_BYTES; i++) packed[i] = 0;
+
+  for (int idx = 0; idx < POLAR_BIN_COUNT; idx++)
+  {
+    uint8_t owner = polarOccupied[idx] ? (uint8_t)(polarOwner[idx] & 0x0F) : 0;
+    int byteIndex = idx / 2;
+    if ((idx & 1) == 0) packed[byteIndex] = owner;
+    else packed[byteIndex] |= (uint8_t)(owner << 4);
+  }
+}
+
+void broadcastPresentationPolarGrid(uint32_t sourceMs)
+{
+  if (!presentationGridEnabled || !presentationPeerAdded) return;
+
+  uint32_t nowMs = millis();
+  if ((nowMs - lastPresentationGridBroadcastMs) < kPresentationGridPeriodMs) return;
+  lastPresentationGridBroadcastMs = nowMs;
+
+  PresentationPolarGridPacket pkt = {};
+  pkt.msg_type = MSG_PRESENTATION_POLAR_GRID;
+  pkt.ring_count = (uint8_t)POLAR_NUM_RINGS;
+  pkt.zone_count = (uint8_t)POLAR_MAX_ZONES;
+  pkt.frame_seq = presentationGridFrameSeq++;
+  pkt.source_ms = sourceMs;
+  packPolarOwnerNibbles(pkt.packed_owner);
+  esp_now_send(PRESENTATION_RECEIVER_MAC, reinterpret_cast<const uint8_t*>(&pkt), sizeof(pkt));
+}
+
 void updateAndBroadcastLedFrame()
 {
   // Always update the polar grid and zone distances — audio needs this even when
   // visual is disabled.
   uint8_t hitMask[POLAR_BIN_COUNT];
-  accumulatePolarHits(hitMask);
-  updatePolarGrid(hitMask);
+  uint8_t hitOwner[POLAR_BIN_COUNT];
+  accumulatePolarHits(hitMask, hitOwner);
+  updatePolarGrid(hitMask, hitOwner);
   computeZoneProximityFromPolar(latestClosestMmByZone);
   emitDetectionDebugFrame(latestClosestMmByZone);
+  broadcastPresentationPolarGrid(millis());
 
   if (proximityVisualEnabled)
   {
@@ -981,6 +1056,8 @@ void emitTuningConfigLine()
   Serial.print((int)polarEnterThreshold);
   Serial.print(",polar_exit,");
   Serial.print((int)polarExitThreshold);
+  Serial.print(",present_grid,");
+  Serial.print(presentationGridEnabled ? 1 : 0);
   Serial.print(",dbg_sensor_csv,");
   Serial.print(debugSensorCsvEnabled ? 1 : 0);
   Serial.print(",dbg_detection_csv,");
@@ -999,7 +1076,7 @@ void handleSerialCommand(char *line)
 
   if (strcmp(line, "HELP") == 0)
   {
-    Serial.println("HELP,GET|SET,<key>,<value> (debug keys: dbg_sensor_csv, dbg_detection_csv)");
+    Serial.println("HELP,GET|SET,<key>,<value> (debug keys: dbg_sensor_csv, dbg_detection_csv, present_grid)");
     return;
   }
 
@@ -1108,6 +1185,12 @@ void handleSerialCommand(char *line)
   {
     polarExitThreshold = (uint8_t)clampInt((int)raw, 0, 254);
     if (polarExitThreshold >= polarEnterThreshold) polarEnterThreshold = polarExitThreshold + 1;
+  }
+  else if (strcmp(key, "present_grid") == 0)
+  {
+    presentationGridEnabled = (raw != 0);
+    if (!presentationGridEnabled) lastPresentationGridBroadcastMs = 0;
+    raw = presentationGridEnabled ? 1 : 0;
   }
   else if (strcmp(key, "dbg_sensor_csv") == 0)
   {
@@ -1497,6 +1580,26 @@ void setup()
     {
       broadcastPeerAdded = 1;
       Serial.println("Broadcast peer registered for render/status packets");
+    }
+  }
+
+  // Dedicated peer for the laptop-side presentation grid receiver.
+  {
+    esp_now_peer_info_t peer = {};
+    memcpy(peer.peer_addr, PRESENTATION_RECEIVER_MAC, 6);
+    peer.ifidx  = WIFI_IF_STA;
+    peer.channel = ESPNOW_CHANNEL;
+    peer.encrypt = false;
+    if (esp_now_add_peer(&peer) == ESP_OK)
+    {
+      presentationPeerAdded = 1;
+      Serial.printf("Presentation receiver peer registered: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                    PRESENTATION_RECEIVER_MAC[0], PRESENTATION_RECEIVER_MAC[1], PRESENTATION_RECEIVER_MAC[2],
+                    PRESENTATION_RECEIVER_MAC[3], PRESENTATION_RECEIVER_MAC[4], PRESENTATION_RECEIVER_MAC[5]);
+    }
+    else
+    {
+      Serial.println("Presentation receiver peer registration failed");
     }
   }
 
