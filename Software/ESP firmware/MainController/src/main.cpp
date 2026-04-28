@@ -988,7 +988,7 @@ void buildRadarFrame(LedFrame_t &frame)
   {
     float distMm = polarRepresentativeDistanceForRing(ring);
     uint8_t color = colorForDistanceMm(distMm);
-    if (color == LED_COLOR_OFF || color == LED_COLOR_GREEN) continue;
+    if (color == LED_COLOR_OFF) continue;
     int displayRing = displayRingIndexFromDistance(distMm);
 
     for (int zone = 0; zone < POLAR_MAX_ZONES; zone++)
