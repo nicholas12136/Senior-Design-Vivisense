@@ -72,6 +72,8 @@ function defaultState(): ConfigState {
 
 let state: ConfigState = defaultState();
 let configStatusHandler: ((data: unknown) => void) | null = null;
+let lastLocalThresholdEditMs = 0;
+const LOCAL_THRESHOLD_ECHO_GUARD_MS = 1200;
 
 
 function updateTonalSettingsVisibility(): void {
@@ -121,6 +123,10 @@ function syncSelectedModeCards(): void {
   });
 }
 
+function markLocalThresholdEdit(): void {
+  lastLocalThresholdEditMs = Date.now();
+}
+
 function applyStatus(msg: Record<string, unknown>): void {
   const zoneMode = msg['zoneMode'] as number | undefined;
   const brightness = msg['brightness'] as number | undefined;
@@ -137,9 +143,12 @@ function applyStatus(msg: Record<string, unknown>): void {
     state.advanced.sectorCount = zoneMode as SectorCount;
   }
   if (brightness !== undefined) state.advanced.brightness = brightness;
-  if (redThreshold !== undefined) state.advanced.thresholds.redMax = redThreshold;
-  if (orangeThreshold !== undefined) state.advanced.thresholds.orangeMax = orangeThreshold;
-  if (yellowThreshold !== undefined) state.advanced.thresholds.yellowMax = yellowThreshold;
+  const withinLocalThresholdGuard = (Date.now() - lastLocalThresholdEditMs) < LOCAL_THRESHOLD_ECHO_GUARD_MS;
+  if (!withinLocalThresholdGuard) {
+    if (redThreshold !== undefined) state.advanced.thresholds.redMax = redThreshold;
+    if (orangeThreshold !== undefined) state.advanced.thresholds.orangeMax = orangeThreshold;
+    if (yellowThreshold !== undefined) state.advanced.thresholds.yellowMax = yellowThreshold;
+  }
   if (renderMode !== undefined && (renderMode === 0 || renderMode === 1)) {
     state.selectedMode = renderMode === 1 ? 'radar' : 'sector';
   }
@@ -194,19 +203,19 @@ function applyStatus(msg: Record<string, unknown>): void {
   const yellowSlider = document.getElementById('threshold-yellow') as HTMLInputElement | null;
   const yellowValEl = document.getElementById('yellow-threshold-val');
   const greenStartsEl = document.getElementById('green-starts-val');
-  if (redSlider && redThreshold !== undefined && activeEl !== redSlider) {
+  if (redSlider && redThreshold !== undefined && activeEl !== redSlider && !withinLocalThresholdGuard) {
     redSlider.value = String(redThreshold);
   }
-  if (redValEl && redThreshold !== undefined) redValEl.textContent = String(redThreshold);
-  if (orangeSlider && orangeThreshold !== undefined && activeEl !== orangeSlider) {
+  if (redValEl && redThreshold !== undefined && !withinLocalThresholdGuard) redValEl.textContent = String(redThreshold);
+  if (orangeSlider && orangeThreshold !== undefined && activeEl !== orangeSlider && !withinLocalThresholdGuard) {
     orangeSlider.value = String(orangeThreshold);
   }
-  if (orangeValEl && orangeThreshold !== undefined) orangeValEl.textContent = String(orangeThreshold);
-  if (yellowSlider && yellowThreshold !== undefined && activeEl !== yellowSlider) {
+  if (orangeValEl && orangeThreshold !== undefined && !withinLocalThresholdGuard) orangeValEl.textContent = String(orangeThreshold);
+  if (yellowSlider && yellowThreshold !== undefined && activeEl !== yellowSlider && !withinLocalThresholdGuard) {
     yellowSlider.value = String(yellowThreshold);
   }
-  if (yellowValEl && yellowThreshold !== undefined) yellowValEl.textContent = String(yellowThreshold);
-  if (greenStartsEl && yellowThreshold !== undefined) greenStartsEl.textContent = String(yellowThreshold);
+  if (yellowValEl && yellowThreshold !== undefined && !withinLocalThresholdGuard) yellowValEl.textContent = String(yellowThreshold);
+  if (greenStartsEl && yellowThreshold !== undefined && !withinLocalThresholdGuard) greenStartsEl.textContent = String(yellowThreshold);
 
   syncSelectedModeCards();
   updateTonalSettingsVisibility();
@@ -568,6 +577,7 @@ export function initFeedbackConfig(): void {
     }
     state.advanced.thresholds.redMax = v;
     if (redVal) redVal.textContent = String(v);
+    markLocalThresholdEdit();
     refreshPreview();
     sendConfig();
     if (previewActive) sendPreview(true);
@@ -584,6 +594,7 @@ export function initFeedbackConfig(): void {
     orangeSlider.value = String(v);
     state.advanced.thresholds.orangeMax = v;
     if (orangeVal) orangeVal.textContent = String(v);
+    markLocalThresholdEdit();
     refreshPreview();
     sendConfig();
     if (previewActive) sendPreview(true);
@@ -598,6 +609,7 @@ export function initFeedbackConfig(): void {
     state.advanced.thresholds.yellowMax = v;
     if (yellowVal) yellowVal.textContent = String(v);
     if (greenStartsVal) greenStartsVal.textContent = String(v);
+    markLocalThresholdEdit();
     refreshPreview();
     sendConfig();
     if (previewActive) sendPreview(true);

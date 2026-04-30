@@ -48,14 +48,14 @@ struct SensorConfig
 SensorConfig SENSOR_CONFIGS[NUM_SENSORS] =
     {
         // ID, x_mm,  y_mm,   z_mm,    alpha,  beta,  gamma
-        {1, 215.0f, 240.0f, 547.0f, 0.0f, 0.0f, 30.0f},
-        {2, 200.0f, 277.0f, 547.0f, 0.0f, 0.0f, 0.0f},
-        {3, 200.0f, -277.0f, 547.0f, 0.0f, 0.0f, 0.0f},
-        {4, 215.0f, -240.0f, 547.0f, 0.0f, 0.0f, -30.0f},
-        {5, -520.0f, -95.0f, 1200.0f, 0.0f, 20.0f, -90.0f},
-        {6, -597.0f, -27.0f, 1200.0f, 0.0f, 20.0f, -150.0f},
-        {7, -597.0f, 27.0f, 1200.0f, 0.0f, 20.0f, 150.0f},
-        {8, -520.0f, 95.0f, 1200.0f, 0.0f, 20.0f, 90.0f},
+        {1, 400.0f, 240.0f, 547.0f, 0.0f, 0.0f, 30.0f},
+        {2, 385.0f, 277.0f, 547.0f, 0.0f, 0.0f, 0.0f},
+        {3, 385.0f, -277.0f, 547.0f, 0.0f, 0.0f, 0.0f},
+        {4, 400.0f, -240.0f, 547.0f, 0.0f, 0.0f, -30.0f},
+        {5, -335.0f, -95.0f, 1200.0f, 0.0f, 20.0f, -90.0f},
+        {6, -262.0f, -27.0f, 1200.0f, 0.0f, 20.0f, -150.0f},
+        {7, -262.0f, 27.0f, 1200.0f, 0.0f, 20.0f, 150.0f},
+        {8, -335.0f, 95.0f, 1200.0f, 0.0f, 20.0f, 90.0f},
 };
 struct SensorPacket
 {
@@ -155,7 +155,7 @@ struct ComponentStatusPacket
 
 static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 // Update this MAC to match the laptop-side PresentationGridReceiver ESP32.
-static uint8_t PRESENTATION_RECEIVER_MAC[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+static uint8_t PRESENTATION_RECEIVER_MAC[6] = {0xE0, 0x8C, 0xFE, 0xB4, 0xE0, 0x6C};
 
 Sensor sensors[NUM_SENSORS];
 uint8_t sensorSeen[NUM_SENSORS] = {0};

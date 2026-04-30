@@ -36,7 +36,8 @@ def list_ports():
 
 def polar_zone_center_plot_deg(zone_idx: int, zones: int) -> float:
     alpha_center = -180.0 + ((zone_idx + 0.5) * (360.0 / zones))
-    return 90.0 - alpha_center
+    # Rotate displayed grid by 180 degrees to match expected orientation.
+    return (90.0 - alpha_center) + 180.0
 
 
 class SerialReader:
@@ -336,7 +337,7 @@ class App:
             self.ax.add_patch(Circle((0.0, 0.0), float(r), fill=False, edgecolor="#9ca3af", linewidth=0.6, alpha=0.8))
         for z in range(self.zones):
             alpha_boundary = -180.0 + (z * step)
-            plot_deg = 90.0 - alpha_boundary
+            plot_deg = (90.0 - alpha_boundary) + 180.0
             rad = math.radians(plot_deg)
             self.ax.plot(
                 [0.0, max_r * math.cos(rad)],
