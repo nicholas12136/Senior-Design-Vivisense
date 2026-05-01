@@ -128,9 +128,9 @@ int currentVolume     = 255;  // 0–255
 bool  previewMode           = false;
 int   previewZoneMode       = 6;
 int   previewBrightness     = 26;
-float previewRedMm          = 600.0f;
-float previewOrangeMm       = 1050.0f;
-float previewYellowMm       = 1500.0f;
+float previewRedMm          = 650.0f;
+float previewOrangeMm       = 950.0f;
+float previewYellowMm       = 1250.0f;
 bool  previewActiveSectors[8]  = {true,true,true,true,true,true,false,false};
 bool  currentActiveSectors[8] = {true,true,true,true,true,true,true,true};
 uint8_t latestSensorSeenMask = 0;
@@ -168,11 +168,11 @@ uint16_t toneYellowTempoMs = 1000;
 
 // Distance thresholds in mm.
 // Defaults match the UI's default cm values × 10.
-float DIST_RING1 = 300.0f;   // inner red boundary
-float DIST_RING2 = 600.0f;   // red / orange boundary  (= redMax cm × 10)
-float DIST_RING3 = 1050.0f;  // mid-orange
-float DIST_RING4 = 1500.0f;  // orange / yellow boundary (= yellowMax cm × 10)
-float DIST_RING5 = 1950.0f;  // first yellow-green ring
+float DIST_RING1 = 325.0f;   // inner red boundary   (= kDefaultRedThresholdMm * 0.5)
+float DIST_RING2 = 650.0f;   // red / orange boundary (= kDefaultRedThresholdMm)
+float DIST_RING3 = 950.0f;   // orange boundary       (= kDefaultOrangeThresholdMm)
+float DIST_RING4 = 1250.0f;  // yellow boundary       (= kDefaultYellowThresholdMm)
+float DIST_RING5 = 1400.0f;  // yellow-green ring     (= kDefaultYellowThresholdMm + (yellow-orange)*0.5)
 
 // ── Server & WebSocket ────────────────────────────────────────────────────────
 AsyncWebServer httpServer(80);

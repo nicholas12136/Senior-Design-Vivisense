@@ -18,7 +18,7 @@ static constexpr uint32_t kProximityPeriodMs = 33;
 static constexpr int kDefaultZoneCount = 6;          // Allowed: 4, 6, 8
 static constexpr int kDefaultBrightness = 26;        // 20% of capped max (50%)
 static constexpr int kMaxBrightness = 128;           // 50%
-static constexpr bool kDefaultVisualEnabled = true;
+static constexpr bool kDefaultVisualEnabled = false;
 static constexpr uint8_t kDefaultActiveSectorMask = 0xFF;
 static constexpr uint8_t kDefaultLedRenderMode = 0;  // 0=sector fill, 1=radar
 

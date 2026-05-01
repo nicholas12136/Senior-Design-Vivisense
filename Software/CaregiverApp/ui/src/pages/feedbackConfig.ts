@@ -57,7 +57,7 @@ function defaultState(): ConfigState {
     selectedAudioMode: null,
     obstacleVolume: 200,
     advanced: {
-      thresholds: { redMax: 60, orangeMax: 105, yellowMax: 150 },
+      thresholds: { redMax: 65, orangeMax: 95, yellowMax: 125 },
       sectorCount: 6,
       activeSectors: buildDefaultSectors(6),
       brightness: 20,
@@ -205,17 +205,17 @@ function applyStatus(msg: Record<string, unknown>): void {
   const greenStartsEl = document.getElementById('green-starts-val');
   if (redSlider && redThreshold !== undefined && activeEl !== redSlider && !withinLocalThresholdGuard) {
     redSlider.value = String(redThreshold);
+    if (redValEl) redValEl.textContent = String(redThreshold);
   }
-  if (redValEl && redThreshold !== undefined && !withinLocalThresholdGuard) redValEl.textContent = String(redThreshold);
   if (orangeSlider && orangeThreshold !== undefined && activeEl !== orangeSlider && !withinLocalThresholdGuard) {
     orangeSlider.value = String(orangeThreshold);
+    if (orangeValEl) orangeValEl.textContent = String(orangeThreshold);
   }
-  if (orangeValEl && orangeThreshold !== undefined && !withinLocalThresholdGuard) orangeValEl.textContent = String(orangeThreshold);
   if (yellowSlider && yellowThreshold !== undefined && activeEl !== yellowSlider && !withinLocalThresholdGuard) {
     yellowSlider.value = String(yellowThreshold);
+    if (yellowValEl) yellowValEl.textContent = String(yellowThreshold);
+    if (greenStartsEl) greenStartsEl.textContent = String(yellowThreshold);
   }
-  if (yellowValEl && yellowThreshold !== undefined && !withinLocalThresholdGuard) yellowValEl.textContent = String(yellowThreshold);
-  if (greenStartsEl && yellowThreshold !== undefined && !withinLocalThresholdGuard) greenStartsEl.textContent = String(yellowThreshold);
 
   syncSelectedModeCards();
   updateTonalSettingsVisibility();
@@ -578,9 +578,7 @@ export function initFeedbackConfig(): void {
     state.advanced.thresholds.redMax = v;
     if (redVal) redVal.textContent = String(v);
     markLocalThresholdEdit();
-    refreshPreview();
     sendConfig();
-    if (previewActive) sendPreview(true);
   });
 
   orangeSlider?.addEventListener('input', () => {
@@ -595,9 +593,7 @@ export function initFeedbackConfig(): void {
     state.advanced.thresholds.orangeMax = v;
     if (orangeVal) orangeVal.textContent = String(v);
     markLocalThresholdEdit();
-    refreshPreview();
     sendConfig();
-    if (previewActive) sendPreview(true);
   });
 
   yellowSlider?.addEventListener('input', () => {
@@ -610,9 +606,7 @@ export function initFeedbackConfig(): void {
     if (yellowVal) yellowVal.textContent = String(v);
     if (greenStartsVal) greenStartsVal.textContent = String(v);
     markLocalThresholdEdit();
-    refreshPreview();
     sendConfig();
-    if (previewActive) sendPreview(true);
   });
 
   document.querySelectorAll<HTMLButtonElement>('.sector-count-btn[data-count]').forEach(btn => {
