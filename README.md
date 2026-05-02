@@ -9,15 +9,11 @@
         SIUE Senior Design Group 3 · A real-time obstacle detection and feedback system for wheelchairs
       </blockquote>
     </td>
-    <td valign="center">
-      <img src=".images/ViviSensePoster.png" width="110">
-    </td>
   </tr>
 </table>
 
 [![Platform](https://img.shields.io/badge/Platform-ESP32-blue)](https://www.espressif.com/en/products/socs/esp32)
 [![Language](https://img.shields.io/badge/Language-C++-orange)](https://isocpp.org/)
-[![Frontend](https://img.shields.io/badge/Frontend-Vue.js-42b883)](https://vuejs.org/)
 [![Visualizer](https://img.shields.io/badge/Visualizer-Python-yellow)](https://www.python.org/)
 [![Protocol](https://img.shields.io/badge/Wireless-ESP--NOW-lightgrey)](https://www.espressif.com/en/solutions/low-power-solutions/esp-now)
 
@@ -25,13 +21,17 @@
 
 ## Project Overview
 
-ViviSense is an obstacle-awareness system designed to improve the safety of wheelchair users. The system mounts multiple **Time-of-Flight (ToF) ranging sensors** to the wheelchair, continuously maps the surrounding environment into a **polar occupancy grid**, and communicates obstacle proximity through three channels simultaneously:
+ViviSense is an obstacle-awareness system designed to improve the safety of wheelchair users. The system mounts multiple [**Time-of-Flight (ToF) sensors**](https://www.pololu.com/product/3418) to the wheelchair, continuously maps the surrounding environment into a **polar occupancy grid**, and communicates obstacle proximity through three channels simultaneously:
 
 - **An LED ring** mounted to the chair that shows direction and severity of nearby obstacles
 - **Audio cues** that warn the user as obstacles enter the danger zone
 - **A caregiver web app** accessible over Wi-Fi, showing live sector status and allowing remote configuration
 
 The core philosophy of the system is clean separation of concerns: sensors *measure*, `MainController` *decides*, and everything else *displays or controls*.
+
+<p align="center">
+  <img src=".images/ViviSensePoster.png" width="750">
+</p>
 
 <p align="center">
   <img src=".images/ViviSense Architecture.png" width="750">
@@ -42,6 +42,25 @@ The core philosophy of the system is clean separation of concerns: sensors *meas
 ---
 
 ## The Design Journey
+
+### Physical Design
+
+Before any firmware was written, the physical sensor pod housings were designed in CAD and the sensor field-of-view coverage was mapped out to determine optimal mounting positions on the chair.
+
+<table border="0">
+  <tr>
+    <td width="50%" align="center">
+      <img src=".images/cad-model.jpg" width="90%">
+      <br><i>CAD model of the sensor pod enclosure (Fusion 360).</i>
+    </td>
+    <td width="50%" align="center">
+      <img src=".images/area-coverage.jpg" width="90%">
+      <br><i>Sensor field-of-view coverage around the wheelchair.</i>
+    </td>
+  </tr>
+</table>
+
+---
 
 ### Pre-Alpha — Proving the Concept
 
@@ -88,20 +107,15 @@ The final design refined the physical pod enclosures, tuned the polar occupancy 
 <table border="0">
   <tr>
     <td width="50%" align="center">
-      <img src=".images/cad-model.jpg" width="90%">
-      <br><i>CAD model of the sensor pod enclosure (Fusion 360).</i>
-    </td>
-    <td width="50%" align="center">
       <img src=".images/pod-interals.png" width="90%">
       <br><i>Inside a sensor pod — ToF sensor array and ESP32 module.</i>
     </td>
+    <td width="50%" align="center">
+      <img src=".images/final-wheelchair.jpg" width="90%">
+      <br><i>The completed ViviSense system on the final wheelchair.</i>
+    </td>
   </tr>
 </table>
-
-<p align="center">
-  <img src=".images/final-wheelchair.jpg" width="65%">
-  <br><i>The completed ViviSense system on the final wheelchair.</i>
-</p>
 
 ---
 
@@ -115,18 +129,10 @@ ViviSense processes obstacle data through a multi-stage pipeline:
 4. **Classify** — Valid points are placed into a polar occupancy grid (12 rings × 24 angular zones). Each cell accumulates confidence over time — preventing flicker through rise/decay hysteresis.
 5. **Output** — Occupancy drives the LED ring (sector or radar mode), audio proximity logic, and the caregiver web UI simultaneously.
 
-<table border="0">
-  <tr>
-    <td width="50%" align="center">
-      <img src=".images/area-coverage.jpg" width="90%">
-      <br><i>Sensor field-of-view coverage around the wheelchair.</i>
-    </td>
-    <td width="50%" align="center">
-      <img src=".images/3d-point-cloud.png" width="90%">
-      <br><i>Live 3D point cloud — raw sensor data visualized in world-frame coordinates.</i>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src=".images/3d-point-cloud.png" width="65%">
+  <br><i>Live 3D point cloud — raw sensor data visualized in world-frame coordinates.</i>
+</p>
 
 ### LED Display Modes
 
@@ -181,11 +187,7 @@ ViviSense processes obstacle data through a multi-stage pipeline:
 
 | Folder | Purpose |
 | :--- | :--- |
-| [`/Software/ESP firmware/MainController`](./Software/ESP%20firmware/MainController) | Central obstacle brain — occupancy grid, LED rendering, audio logic |
-| [`/Software/ESP firmware/LEDRingController`](./Software/ESP%20firmware) | Dedicated ESP32 that drives the physical NeoPixel ring |
-| [`/Software/ESP firmware/LeftPodSender_ArduinoIDE`](./Software/ESP%20firmware) | Left sensor pod firmware (sensor IDs 1 & 2) |
-| [`/Software/ESP firmware/RightPodSender_ArduinoIDE`](./Software/ESP%20firmware) | Right sensor pod firmware (sensor IDs 3 & 4) |
-| [`/Software/ESP firmware/PresentationGridReceiver`](./Software/ESP%20firmware) | Optional demo receiver — forwards live grid over USB serial |
+| [`/Software/ESP firmware`](./Software/ESP%20firmware) | All ESP32 firmware — main controller, sensor pods, LED ring, and presentation receiver |
 | [`/Software/CaregiverApp`](./Software/CaregiverApp) | ESP32 Wi-Fi AP + Vue.js caregiver web interface |
 | [`/Software/Visualizer`](./Software/Visualizer) | Python tools: point cloud, occupancy grid, polar grid, latency monitor |
 | [`/mechanical`](./mechanical) | 3D print files (STEP/STL) for sensor pod housings |
