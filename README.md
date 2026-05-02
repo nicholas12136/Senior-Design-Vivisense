@@ -114,7 +114,7 @@ With sensor communication validated, we moved to integrating the pods onto an ac
 The final design refined the physical pod enclosures (transitioned to soldered protoboard assemblies), migrated from a Cartesian to a polar occupancy grid, tuned hysteresis for stable real-world behavior, completed the caregiver web UI, and added full audio feedback in both Tonal and Verbal modes. The result is a fully integrated system that works across all three feedback channels simultaneously.
 
 <p align="center">
-  <img src=".images/final-wheelchair.jpg" width="65%">
+  <img src=".images/final-wheelchair.jpg" width="35%">
   <br><i>The completed ViviSense system on the final wheelchair.</i>
 </p>
 
