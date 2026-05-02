@@ -39,7 +39,7 @@ The system serves two distinct roles:
 The core philosophy of the system is clean separation of concerns: sensors *measure*, `MainController` *decides*, and everything else *displays or controls*.
 
 <p align="center">
-  <img src=".images/ViviSense Architecture.png" width="750">
+  <img src=".images/ViviSense Architecture.png" width="450">
 </p>
 
 > *ViviSense end-to-end system architecture.*
@@ -78,7 +78,7 @@ The project started with a bench-top sensor validation rig. Before mounting anyt
       <br><i>Early bench setup for sensor validation and firmware bring-up.</i>
     </td>
     <td width="50%" align="center">
-      <img src=".images/pre-alpha-setup2.jpg" width="70%">
+      <img src=".images/pre-alpha-setup2.jpg" width="60%">
       <br><i>Testing point cloud geometry before mounting hardware to the chair.</i>
     </td>
   </tr>
