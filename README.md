@@ -78,7 +78,7 @@ The project started with a bench-top sensor validation rig. Before mounting anyt
       <br><i>Early bench setup for sensor validation and firmware bring-up.</i>
     </td>
     <td width="50%" align="center">
-      <img src=".images/pre-alpha-setup2.jpg" width="90%">
+      <img src=".images/pre-alpha-setup2.jpg" width="70%">
       <br><i>Testing point cloud geometry before mounting hardware to the chair.</i>
     </td>
   </tr>
