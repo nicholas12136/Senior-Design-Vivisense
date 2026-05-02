@@ -55,11 +55,11 @@ Before any firmware was written, the physical sensor pod housings were designed 
 <table border="0">
   <tr>
     <td width="50%" align="center">
-      <img src=".images/cad-model.jpg" width="90%">
+      <img src=".images/cad-model.jpg" width="70%">
       <br><i>CAD model of the sensor pod enclosure (Fusion 360).</i>
     </td>
     <td width="50%" align="center">
-      <img src=".images/area-coverage.jpg" width="90%">
+      <img src=".images/area-coverage.jpg" width="70%">
       <br><i>Sensor field-of-view coverage around the wheelchair.</i>
     </td>
   </tr>
@@ -143,6 +143,11 @@ ViviSense processes obstacle data through a multi-stage pipeline:
   </tr>
 </table>
 
+<p align="center">
+  <img src=".images/demo-video.gif" width="35%">
+  <br><i>Live presentation viewer showing the occupancy grid updating in real-time.</i>
+</p>
+
 ### LED Display Modes
 
 `MainController` supports two visual modes, both driven by the same polar occupancy grid:
@@ -159,11 +164,6 @@ ViviSense processes obstacle data through a multi-stage pipeline:
     </td>
   </tr>
 </table>
-
-<p align="center">
-  <img src=".images/demo-video.gif" width="65%">
-  <br><i>Live presentation viewer showing the occupancy grid updating in real-time.</i>
-</p>
 
 ---
 
