@@ -39,7 +39,7 @@ The system serves two distinct roles:
 The core philosophy of the system is clean separation of concerns: sensors *measure*, `MainController` *decides*, and everything else *displays or controls*.
 
 <p align="center">
-  <img src=".images/ViviSense Architecture.png" width="450">
+  <img src=".images/ViviSense Architecture.png" width="550">
 </p>
 
 > *ViviSense end-to-end system architecture.*
@@ -144,7 +144,7 @@ ViviSense processes obstacle data through a multi-stage pipeline:
 </table>
 
 <p align="center">
-  <img src=".images/demo-video.gif" width="35%">
+  <img src=".images/demo-video.gif" width="45%">
   <br><i>Live presentation viewer showing the occupancy grid updating in real-time.</i>
 </p>
 
