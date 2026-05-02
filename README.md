@@ -25,7 +25,7 @@
 
 ## Project Overview
 
-ViviSense is an obstacle-awareness system designed to improve the safety of powered wheelchair users. The system mounts multiple **Time-of-Flight (ToF) ranging sensors** to the wheelchair, continuously maps the surrounding environment into a **polar occupancy grid**, and communicates obstacle proximity through three channels simultaneously:
+ViviSense is an obstacle-awareness system designed to improve the safety of wheelchair users. The system mounts multiple **Time-of-Flight (ToF) ranging sensors** to the wheelchair, continuously maps the surrounding environment into a **polar occupancy grid**, and communicates obstacle proximity through three channels simultaneously:
 
 - **An LED ring** mounted to the chair that shows direction and severity of nearby obstacles
 - **Audio cues** that warn the user as obstacles enter the danger zone
@@ -64,7 +64,7 @@ The project started with a bench-top sensor validation rig. Before mounting anyt
 
 ### Alpha — First Hardware Integration
 
-With sensor communication validated, we moved to integrating the pods onto an actual powered wheelchair. The alpha build introduced the physical sensor pod enclosures, the LED ring, and the first end-to-end run of the full pipeline — from raw ToF data all the way to lit LEDs on the chair.
+With sensor communication validated, we moved to integrating the pods onto an actual wheelchair. The alpha build introduced the physical sensor pod enclosures, the LED ring, and the first end-to-end run of the full pipeline — from raw ToF data all the way to lit LEDs on the chair.
 
 <table border="0">
   <tr>
