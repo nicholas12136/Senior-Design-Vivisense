@@ -21,11 +21,11 @@
 
 ## Project Overview
 
-ViviSense is an obstacle-awareness system designed to improve the safety and independence of children who use wheelchairs. The system mounts eight [**VL53L7CX multizone Time-of-Flight (ToF) sensors**](https://www.pololu.com/product/3418) across two front armrest pods and a rear pentagonal tower, continuously mapping the surrounding environment into a **polar occupancy grid** (12 rings × 24 angular bins), and communicates obstacle proximity through three channels simultaneously:
+ViviSense is an obstacle-awareness system designed to improve the safety of wheelchair users. The system mounts multiple [**Time-of-Flight (ToF) sensors**](https://www.pololu.com/product/3418) to the wheelchair, continuously maps the surrounding environment into a **polar occupancy grid**, and communicates obstacle proximity through three channels simultaneously:
 
-- **An LED ring** mounted to the chair that shows direction and severity of nearby obstacles in two modes: Sector Mode and Radar Mode
-- **Audio cues** in two modes — Tonal Mode (pitch rises as obstacles approach) and Verbal Mode (spoken directional alerts such as "Very close, ahead")
-- **A caregiver web app** accessible over Wi-Fi, showing live sector status with configurable distance thresholds, sector count, visual and audio mode selection, and remote navigation commands
+- **An LED ring** mounted to the chair that shows direction and severity of nearby obstacles
+- **Audio cues** that warn the user as obstacles enter the danger zone
+- **A caregiver web app** accessible over Wi-Fi, showing live sector status and allowing remote configuration
 
 The core philosophy of the system is clean separation of concerns: sensors *measure*, `MainController` *decides*, and everything else *displays or controls*.
 
@@ -102,7 +102,7 @@ With sensor communication validated, we moved to integrating the pods onto an ac
 
 ### Final System
 
-The final design refined the physical pod enclosures (transitioned to soldered protoboard assemblies), migrated from a Cartesian to a polar occupancy grid, tuned hysteresis for stable real-world behavior, completed the caregiver web UI, and added full audio feedback in both Tonal and Verbal modes. The result is a fully integrated system that works across all three feedback channels simultaneously.
+The final design refined the physical pod enclosures, tuned the polar occupancy algorithm for stable real-world behavior, completed the caregiver web UI, and added audio feedback. The result is a fully integrated system that works across all three feedback channels simultaneously.
 
 <table border="0">
   <tr>
@@ -123,11 +123,11 @@ The final design refined the physical pod enclosures (transitioned to soldered p
 
 ViviSense processes obstacle data through a multi-stage pipeline:
 
-1. **Sense** — Each sensor pod reads a 4×4 grid of distances from its VL53L7CX array at 15 Hz and transmits a `SensorPacket` wirelessly via ESP-NOW (average latency: 2.5 ms).
-2. **Convert** — `MainController` receives packets and applies per-sensor extrinsic pose transforms (rotation matrix + translation offset) to convert each valid range cell into a world-frame 3D point relative to the wheelchair (`+X` forward, `+Y` left, `+Z` up).
-3. **Filter** — Points outside the height window (configurable floor/ceiling cutoffs), below minimum distance, or with invalid target status are discarded.
-4. **Classify** — Valid points are placed into a polar occupancy grid (12 rings × 24 angular bins). Each cell accumulates confidence over time through configurable rise/decay hysteresis, preventing flicker. The closest occupied distance per user-facing sector is mapped to one of four severity levels: 🔴 Red (≤ 60 cm), 🟠 Orange (≤ 105 cm), 🟡 Yellow (≤ 150 cm), 🟢 Green (> 150 cm).
-5. **Output** — Occupancy drives the LED ring (Sector Mode or Radar Mode), audio proximity logic (Tonal Mode or Verbal Mode), and the caregiver web app simultaneously.
+1. **Sense** — Each sensor pod reads a grid of distances from its ToF array and transmits a `SensorPacket` wirelessly via ESP-NOW.
+2. **Convert** — `MainController` receives packets and converts each valid range cell into a world-frame 3D point relative to the wheelchair (`+X` forward, `+Y` left, `+Z` up).
+3. **Filter** — Points outside the height window (floor/ceiling cutoffs), below minimum distance, or with invalid target status are discarded.
+4. **Classify** — Valid points are placed into a polar occupancy grid (12 rings × 24 angular zones). Each cell accumulates confidence over time — preventing flicker through rise/decay hysteresis.
+5. **Output** — Occupancy drives the LED ring (sector or radar mode), audio proximity logic, and the caregiver web UI simultaneously.
 
 <p align="center">
   <img src=".images/3d-point-cloud.png" width="65%">
@@ -142,11 +142,11 @@ ViviSense processes obstacle data through a multi-stage pipeline:
   <tr>
     <td width="50%" align="center">
       <img src=".images/sector-mode-img.png" width="90%">
-      <br><i><b>Sector Mode</b> — the ring is divided into angular sectors (4, 6, or 8). Each lights up with severity color based on the nearest obstacle in that direction. Recommended for beginner users.</i>
+      <br><i><b>Sector Mode</b> — the ring is divided into angular sectors (4, 6, or 8). Each lights up with severity color based on the nearest obstacle in that direction.</i>
     </td>
     <td width="50%" align="center">
       <img src=".images/radar-mode-img.png" width="90%">
-      <br><i><b>Radar Mode</b> — individual polar bins are drawn by angle and distance, giving a fine-grained sweep-like plan-view display. Recommended for advanced users.</i>
+      <br><i><b>Radar Mode</b> — individual polar bins are drawn by angle and distance, giving a fine-grained sweep-like display.</i>
     </td>
   </tr>
 </table>
@@ -168,34 +168,15 @@ ViviSense processes obstacle data through a multi-stage pipeline:
 
 ---
 
-## Performance Summary
-
-Beta testing validated the complete integrated system against all target specifications. Key results:
-
-| Metric | Target | Beta Result |
-| :--- | :--- | :--- |
-| Detection range (walls) | 3.0 m | ~2.5 m |
-| Detection range (people) | 2.5 m | ~2.5 m |
-| End-to-end alert latency | < 100 ms | **33 ms** |
-| Update rate | ≥ 10 Hz | **15 Hz** |
-| Angular coverage | 360° | ~350° |
-| ESP-NOW wireless latency | — | 2.5 ms avg / 4.2 ms max |
-| System weight | < 5 lbs | **< 5 lbs** ✓ |
-| Battery life | ≥ 14 hrs | ~12 hrs |
-| Confirmed build cost | < $299 | **$298.99** ✓ |
-
----
-
 ## Tech Stack
 
 | Layer | Technology |
 | :--- | :--- |
-| **Sensor Pods** | ESP32 + VL53L7CX multizone Time-of-Flight ranging arrays |
-| **Wireless** | ESP-NOW (low-latency, connectionless; 2.5 ms avg latency) |
+| **Sensor Pods** | ESP32 + VL53L5CX Time-of-Flight ranging arrays |
+| **Wireless** | ESP-NOW (low-latency, connectionless) |
 | **Main Controller** | ESP32 (C++ / PlatformIO) |
-| **LED Ring** | WS2812B NeoPixel ring driven by a dedicated ESP32 |
-| **Audio** | I2S class-D digital amplifier + 3 W speaker (Tonal & Verbal modes) |
-| **Caregiver App** | ESP32 Wi-Fi AP + C++ WebSocket server + React/TypeScript SPA |
+| **LED Ring** | NeoPixel ring driven by a dedicated ESP32 |
+| **Caregiver App** | ESP32 Wi-Fi AP + C++ HTTP server + Vue.js TypeScript SPA |
 | **Visualization** | Python 3 (matplotlib, numpy, pyserial) |
 | **CAD** | Fusion 360 |
 | **Build System** | PlatformIO (firmware), npm (UI) |
@@ -207,7 +188,7 @@ Beta testing validated the complete integrated system against all target specifi
 | Folder | Purpose |
 | :--- | :--- |
 | [`/Software/ESP firmware`](./Software/ESP%20firmware) | All ESP32 firmware — main controller, sensor pods, LED ring, and presentation receiver |
-| [`/Software/CaregiverApp`](./Software/CaregiverApp) | ESP32 Wi-Fi AP + React/TypeScript caregiver web interface |
+| [`/Software/CaregiverApp`](./Software/CaregiverApp) | ESP32 Wi-Fi AP + Vue.js caregiver web interface |
 | [`/Software/Visualizer`](./Software/Visualizer) | Python tools: point cloud, occupancy grid, polar grid, latency monitor |
 | [`/mechanical`](./mechanical) | 3D print files (STEP/STL) for sensor pod housings |
 | [`/simulation`](./simulation) | MATLAB point cloud and occupancy grid simulation |
@@ -225,7 +206,7 @@ Beta testing validated the complete integrated system against all target specifi
 
 - **VS Code** with the [PlatformIO IDE](https://platformio.org/) extension — for ESP32 firmware
 - **Arduino IDE** — for LED ring and sensor pod firmware
-- **Node.js / npm** — for building the caregiver React/TypeScript UI
+- **Node.js / npm** — for building the caregiver Vue.js UI
 - **Python 3.11+** — for the visualizer tools (`pip install -r Software/Visualizer/requirements.txt`)
 - **MATLAB** — for the simulation (optional)
 
@@ -305,7 +286,7 @@ python playback_occupancy_grid_csv.py path/to/recording.csv
 <details>
 <summary><b>Click to expand: Lessons Learned & Design Decisions</b></summary>
 
-- **Polar-only architecture paid off.** Early iterations explored both Cartesian and polar obstacle models. Consolidating to a single polar occupancy grid (12 rings × 24 angular bins) simplified tuning significantly — one set of parameters now governs LED output, audio, and the visualizer simultaneously.
+- **Polar-only architecture paid off.** Early iterations explored both Cartesian and polar obstacle models. Consolidating to a single polar occupancy grid simplified tuning significantly — one set of parameters now governs LED output, audio, and the presentation visualizer simultaneously.
 
 - **Hysteresis is essential.** Without confidence rise/decay on each occupancy cell, the LED ring flickered badly in real-world noise. The `polar_rise`/`polar_decay`/`polar_enter`/`polar_exit` parameter set made behavior dramatically more stable.
 
@@ -313,13 +294,7 @@ python playback_occupancy_grid_csv.py path/to/recording.csv
 
 - **Height filtering (`floor_z_mm` / `ceiling_z_mm`) is surprisingly impactful.** Without a ceiling cutoff, the sensors reliably detected the user's own arms and lap. Without a floor cutoff, floor-level reflections created phantom obstacles. Tuning the vertical window dramatically cleaned up real-world behavior.
 
-- **4×4 mode outperforms 8×8 for real-world range.** Bench testing confirmed that 4×4 mode reliably detects walls to 3.0 m and people to 2.5 m. The 8×8 mode achieved only ~2.0 m (walls) and ~1.5 m (people) due to reduced per-zone signal energy.
-
-- **ESP-NOW was the right wireless choice.** Its connectionless, broadcast nature meant sensor pods could start sending immediately without a pairing sequence. Measured latency was 2.5 ms average and 4.2 ms maximum — approximately 20× faster than the 100 ms end-to-end target.
-
-- **The system reached $298.99 confirmed build cost**, meeting the sub-$299 target and validating ViviSense as a viable low-cost alternative to commercial systems costing $1,000–$6,000+.
-
-- **External clinical validation:** A school-based Physical Therapist Assistant who reviewed the final system described it as having *"clear clinical relevance for pediatric and school-based populations, particularly for students developing spatial awareness and working towards independent mobility skills."*
+- **ESP-NOW was the right wireless choice.** Its connectionless, broadcast nature meant sensor pods could start sending immediately without a pairing sequence, and the latency was consistently below 10 ms.
 
 </details>
 
