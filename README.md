@@ -4,9 +4,9 @@
       <img src=".images/vivisense-logo.png" width="110">
     </td>
     <td>
-      <h1>ViviSense — Wheelchair Obstacle Awareness System</h1>
+      <h1>ViviSense</h1>
       <blockquote>
-        SIUE Senior Design Group 3 · A real-time obstacle detection and feedback system for wheelchairs
+        SIUE Senior Design Group 3 · Wheelchair Obstacle Dectection & Navigation Aid
       </blockquote>
     </td>
   </tr>
@@ -21,17 +21,22 @@
 
 ## Project Overview
 
-ViviSense is an obstacle-awareness system designed to improve the safety and independence of children who use wheelchairs. The system mounts eight [**VL53L7CX multizone Time-of-Flight (ToF) sensors**](https://www.pololu.com/product/3418) across two front armrest pods and a rear pentagonal tower, continuously mapping the surrounding environment into a **polar occupancy grid** (12 rings × 24 angular bins), and communicates obstacle proximity through three channels simultaneously:
-
-- **An LED ring** mounted to the chair that shows direction and severity of nearby obstacles in two modes: Sector Mode and Radar Mode
-- **Audio cues** in two modes — Tonal Mode (pitch rises as obstacles approach) and Verbal Mode (spoken directional alerts such as "Very close, ahead")
-- **A caregiver web app** accessible over Wi-Fi, showing live sector status with configurable distance thresholds, sector count, visual and audio mode selection, and remote navigation commands
-
-The core philosophy of the system is clean separation of concerns: sensors *measure*, `MainController` *decides*, and everything else *displays or controls*.
-
 <p align="center">
   <img src=".images/ViviSensePoster.png" width="750">
 </p>
+
+ViviSense is an obstacle-awareness system designed to improve the safety and independence of children who use wheelchairs. The system mounts eight [**VL53L7CX multizone Time-of-Flight (ToF) sensors**](https://www.pololu.com/product/3418) across two front armrest pods and a rear pentagonal tower, continuously mapping the surrounding environment into a **polar occupancy grid** (12 rings × 24 angular bins).
+
+The system serves two distinct roles:
+
+**Obstacle Detection** — real-time feedback delivered directly to the wheelchair user through two simultaneous channels:
+- **An LED ring** mounted to the chair that shows direction and severity of nearby obstacles in two modes: Sector Mode and Radar Mode
+- **Audio cues** in two modes — Tonal Mode (pitch rises as obstacles approach) and Verbal Mode (spoken directional alerts such as "Very close, ahead")
+
+**Navigation Aid** — caregiver-facing tools for configuration, monitoring, and assisted control:
+- **A caregiver web app** accessible over Wi-Fi, showing live sector status with configurable distance thresholds, sector count, visual and audio mode selection, and remote navigation commands
+
+The core philosophy of the system is clean separation of concerns: sensors *measure*, `MainController` *decides*, and everything else *displays or controls*.
 
 <p align="center">
   <img src=".images/ViviSense Architecture.png" width="750">
@@ -87,13 +92,17 @@ With sensor communication validated, we moved to integrating the pods onto an ac
 
 <table border="0">
   <tr>
-    <td width="50%" align="center">
+    <td width="33%" align="center">
       <img src=".images/alpha-wheelchair-pic1.jpg" width="90%">
       <br><i>Alpha hardware integration — sensor pods and LED ring mounted to the chair.</i>
     </td>
-    <td width="50%" align="center">
+    <td width="33%" align="center">
       <img src=".images/alpha-wheelchair-pic2.jpg" width="90%">
       <br><i>Full alpha system running for the first time with live obstacle feedback.</i>
+    </td>
+    <td width="33%" align="center">
+      <img src=".images/pod-interals.png" width="90%">
+      <br><i>Inside a sensor pod — ToF sensor array and ESP32 module.</i>
     </td>
   </tr>
 </table>
@@ -104,18 +113,10 @@ With sensor communication validated, we moved to integrating the pods onto an ac
 
 The final design refined the physical pod enclosures (transitioned to soldered protoboard assemblies), migrated from a Cartesian to a polar occupancy grid, tuned hysteresis for stable real-world behavior, completed the caregiver web UI, and added full audio feedback in both Tonal and Verbal modes. The result is a fully integrated system that works across all three feedback channels simultaneously.
 
-<table border="0">
-  <tr>
-    <td width="50%" align="center">
-      <img src=".images/pod-interals.png" width="90%">
-      <br><i>Inside a sensor pod — ToF sensor array and ESP32 module.</i>
-    </td>
-    <td width="50%" align="center">
-      <img src=".images/final-wheelchair.jpg" width="90%">
-      <br><i>The completed ViviSense system on the final wheelchair.</i>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src=".images/final-wheelchair.jpg" width="65%">
+  <br><i>The completed ViviSense system on the final wheelchair.</i>
+</p>
 
 ---
 
@@ -129,10 +130,18 @@ ViviSense processes obstacle data through a multi-stage pipeline:
 4. **Classify** — Valid points are placed into a polar occupancy grid (12 rings × 24 angular bins). Each cell accumulates confidence over time through configurable rise/decay hysteresis, preventing flicker. The closest occupied distance per user-facing sector is mapped to one of four severity levels: 🔴 Red (≤ 60 cm), 🟠 Orange (≤ 105 cm), 🟡 Yellow (≤ 150 cm), 🟢 Green (> 150 cm).
 5. **Output** — Occupancy drives the LED ring (Sector Mode or Radar Mode), audio proximity logic (Tonal Mode or Verbal Mode), and the caregiver web app simultaneously.
 
-<p align="center">
-  <img src=".images/3d-point-cloud.png" width="65%">
-  <br><i>Live 3D point cloud — raw sensor data visualized in world-frame coordinates.</i>
-</p>
+<table border="0">
+  <tr>
+    <td width="50%" align="center">
+      <img src=".images/3d-point-cloud.png" width="90%">
+      <br><i>Live 3D point cloud — raw sensor data visualized in world-frame coordinates.</i>
+    </td>
+    <td width="50%" align="center">
+      <img src=".images/2d-grid.png" width="90%">
+      <br><i>2D polar occupancy grid — each cell shows which sensor "owns" that zone.</i>
+    </td>
+  </tr>
+</table>
 
 ### LED Display Modes
 
@@ -141,30 +150,20 @@ ViviSense processes obstacle data through a multi-stage pipeline:
 <table border="0">
   <tr>
     <td width="50%" align="center">
-      <img src=".images/sector-mode-img.png" width="90%">
+      <img src=".images/sector-mode-img.png" width="55%">
       <br><i><b>Sector Mode</b> — the ring is divided into angular sectors (4, 6, or 8). Each lights up with severity color based on the nearest obstacle in that direction. Recommended for beginner users.</i>
     </td>
     <td width="50%" align="center">
-      <img src=".images/radar-mode-img.png" width="90%">
+      <img src=".images/radar-mode-img.png" width="55%">
       <br><i><b>Radar Mode</b> — individual polar bins are drawn by angle and distance, giving a fine-grained sweep-like plan-view display. Recommended for advanced users.</i>
     </td>
   </tr>
 </table>
 
-### Occupancy Grid Visualization
-
-<table border="0">
-  <tr>
-    <td width="50%" align="center">
-      <img src=".images/2d-grid.png" width="90%">
-      <br><i>2D polar occupancy grid — each cell shows which sensor "owns" that zone.</i>
-    </td>
-    <td width="50%" align="center">
-      <img src=".images/demo-video.gif" width="90%">
-      <br><i>Live presentation viewer showing the occupancy grid updating in real-time.</i>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src=".images/demo-video.gif" width="65%">
+  <br><i>Live presentation viewer showing the occupancy grid updating in real-time.</i>
+</p>
 
 ---
 
