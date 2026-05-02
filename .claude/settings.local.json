@@ -6,7 +6,17 @@
       "Bash(git checkout *)",
       "Bash(python -c ' *)",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(pip --version)",
+      "Bash(python -c \"import matplotlib; import numpy; import serial; print\\('all imports ok'\\)\")",
+      "Bash(python serial_presentation_polar_grid_viewer.py --help)",
+      "Bash(python -c \"import tkinter; print\\('tkinter ok'\\)\")",
+      "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(where python *)",
+      "Bash(/c/msys64/mingw64/bin/python.exe -c \"import matplotlib, numpy, serial; print\\('ok'\\)\")",
+      "Bash(/c/msys64/mingw64/bin/python.exe --version)",
+      "Bash(/c/msys64/mingw64/bin/python.exe -m pip install matplotlib numpy pyserial)",
+      "Bash(C:/Users/npg20/AppData/Local/Programs/Python/Python311/python.exe -c \"import matplotlib, numpy, serial, tkinter; print\\('All packages OK'\\)\")"
     ]
   }
 }
