@@ -155,21 +155,21 @@ The caregiver web app is served directly from the wheelchair over Wi-Fi and is a
 **Controller:** the navigation aid interface. The caregiver can send directional and speed commands, and it was intended to implement a functioning "Tap to Speak" microphone button but this was never accomplished. A volume slider controls speaker output. The **Connections** dropdown at the top shows the live status of every subsystem so the caregiver can immediately see if anything has gone offline.
 
 <p align="center">
-      <img src=".images/caregiver-controller.png" width="100%">
+      <img src=".images/caregiver-controller.png" width="50%">
       <br><i><b>Controller</b> — directional commands, speed control, and live subsystem connection status.</i>
 </p>
 
 **Feedback:** mode selection for both feedback channels. The Audio Feedback section lets the caregiver choose between **Tonal** mode (obstacle proximity is communicated through tones that rise in pitch and tempo as objects get closer) and **Verbal** mode (spoken cues that describe the direction and distance of detected obstacles). The Visual Feedback section lets the caregiver switch between **Sector Mode** (each angular zone of the LED ring lights up red/orange/yellow based on the nearest obstacle distance, or green when clear) and **Radar Mode** (occupied polar grid cells are rendered directly by angle and distance, giving a fine-grained sweep-like display). Both channels can be independently enabled or disabled.
 
 <p width="33%" align="center">
-      <img src=".images/caregiver-feedback.png" width="80%">
+      <img src=".images/caregiver-feedback.png" width="40%">
       <br><i><b>Feedback</b> — audio and visual mode selection for both obstacle detection channels.</i>
 </p>
 
 **Advanced Settings:** fine-grained tuning of both the detection and feedback parameters. The caregiver can select the number of active sectors (4, 6, or 8) and toggle individual compass directions on or off. Distance severity thresholds are adjustable via sliders: 🔴 Red (default 65 cm), 🟠 Orange (default 95 cm), 🟡 Yellow (default 125 cm), 🟢 Green beyond that. Tonal mode exposes per-zone pitch and tempo sliders — for example, the red zone defaults to 1200 Hz at 150 ms intervals, stepping down to 400 Hz at 1000 ms intervals for the yellow zone. LED brightness is also adjustable here.
 
 <p width="33%" align="center">
-      <img src=".images/caregiver-advanced.png" width="80%">
+      <img src=".images/caregiver-advanced.png" width="40%">
       <br><i><b>Advanced Settings</b> — sector count, active directions, distance thresholds, tonal pitch/tempo, and brightness.</i>
 </p>
 
